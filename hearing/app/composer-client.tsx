@@ -1,8 +1,14 @@
-"use client";
+'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
-const INITIAL_CANVAS = { width: 1200, height: 900, background: "#ffffff" };
+const INITIAL_CANVAS = { width: 1200, height: 900, background: '#ffffff' };
 
 function normalizeHexColor(hex: string): string {
   const t = hex.trim().toLowerCase();
@@ -16,12 +22,12 @@ function normalizeHexColor(hex: string): string {
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const t = normalizeHexColor(hex).replace(/^#/, "");
+  const t = normalizeHexColor(hex).replace(/^#/, '');
   if (!/^[0-9a-f]{6}$/i.test(t)) return null;
   return {
     r: parseInt(t.slice(0, 2), 16),
     g: parseInt(t.slice(2, 4), 16),
-    b: parseInt(t.slice(4, 6), 16)
+    b: parseInt(t.slice(4, 6), 16),
   };
 }
 
@@ -65,7 +71,11 @@ function hexToHsl(hex: string): { h: number; s: number; l: number } | null {
         break;
     }
   }
-  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
 }
 
 function hslToHex(h: number, s: number, l: number): string {
@@ -77,7 +87,7 @@ function hslToHex(h: number, s: number, l: number): string {
     const c = ll - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
     return Math.round(255 * c)
       .toString(16)
-      .padStart(2, "0");
+      .padStart(2, '0');
   };
   return `#${f(0)}${f(8)}${f(4)}`.toLowerCase();
 }
@@ -110,12 +120,12 @@ type DetectResponse = {
 };
 
 function asNum(v: unknown, fallback = 0): number {
-  const n = typeof v === "number" ? v : Number(v);
+  const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
 
 function parseBBox(raw: unknown): CropBox | null {
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const x = asNum(o.x);
   const y = asNum(o.y);
@@ -127,7 +137,7 @@ function parseBBox(raw: unknown): CropBox | null {
 
 /** Normalized bbox 0–1 relative to parent width/height */
 function parseBBoxNorm(raw: unknown): CropBox | null {
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const x = asNum(o.x);
   const y = asNum(o.y);
@@ -137,8 +147,10 @@ function parseBBoxNorm(raw: unknown): CropBox | null {
   return { x, y, width: w, height: h };
 }
 
-function parseParentSize(raw: unknown): { width: number; height: number } | null {
-  if (!raw || typeof raw !== "object") return null;
+function parseParentSize(
+  raw: unknown,
+): { width: number; height: number } | null {
+  if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const w = asNum(o.width);
   const h = asNum(o.height);
@@ -146,33 +158,48 @@ function parseParentSize(raw: unknown): { width: number; height: number } | null
   return { width: w, height: h };
 }
 
-function bboxNormToPixels(norm: unknown, parentW: number, parentH: number): CropBox | null {
+function bboxNormToPixels(
+  norm: unknown,
+  parentW: number,
+  parentH: number,
+): CropBox | null {
   const n = parseBBoxNorm(norm);
   if (!n) return null;
   return {
     x: n.x * parentW,
     y: n.y * parentH,
     width: n.width * parentW,
-    height: n.height * parentH
+    height: n.height * parentH,
   };
 }
 
 function getImageMetaForSource(
   imageMeta: Record<string, unknown> | undefined,
-  sourceKey: string
+  sourceKey: string,
 ): { parent_size?: { width: number; height: number } } | null {
   if (!imageMeta) return null;
   const direct = imageMeta[sourceKey];
-  if (direct && typeof direct === "object") return direct as { parent_size?: { width: number; height: number } };
+  if (direct && typeof direct === 'object')
+    return direct as { parent_size?: { width: number; height: number } };
   const hit = Object.keys(imageMeta).find(
-    (k) => k === sourceKey || decodeURIComponent(k) === decodeURIComponent(sourceKey)
+    (k) =>
+      k === sourceKey ||
+      decodeURIComponent(k) === decodeURIComponent(sourceKey),
   );
-  if (hit && imageMeta[hit] && typeof imageMeta[hit] === "object") {
-    return imageMeta[hit] as { parent_size?: { width: number; height: number } };
+  if (hit && imageMeta[hit] && typeof imageMeta[hit] === 'object') {
+    return imageMeta[hit] as {
+      parent_size?: { width: number; height: number };
+    };
   }
   const keys = Object.keys(imageMeta);
-  if (keys.length === 1 && imageMeta[keys[0]!] && typeof imageMeta[keys[0]!] === "object") {
-    return imageMeta[keys[0]!] as { parent_size?: { width: number; height: number } };
+  if (
+    keys.length === 1 &&
+    imageMeta[keys[0]!] &&
+    typeof imageMeta[keys[0]!] === 'object'
+  ) {
+    return imageMeta[keys[0]!] as {
+      parent_size?: { width: number; height: number };
+    };
   }
   return null;
 }
@@ -182,25 +209,29 @@ function getImageMetaForSource(
  */
 function parseImagesRecord(
   images: unknown,
-  imageMeta: Record<string, unknown> | undefined
+  imageMeta: Record<string, unknown> | undefined,
 ): { url: string; bbox?: CropBox }[] {
-  if (!images || typeof images !== "object" || Array.isArray(images)) return [];
+  if (!images || typeof images !== 'object' || Array.isArray(images)) return [];
   const out: { url: string; bbox?: CropBox }[] = [];
-  for (const [sourceKey, list] of Object.entries(images as Record<string, unknown>)) {
+  for (const [sourceKey, list] of Object.entries(
+    images as Record<string, unknown>,
+  )) {
     if (!Array.isArray(list)) continue;
     const meta = getImageMetaForSource(imageMeta, sourceKey);
-    const parentFromMeta = meta?.parent_size ? parseParentSize(meta.parent_size) : null;
+    const parentFromMeta = meta?.parent_size
+      ? parseParentSize(meta.parent_size)
+      : null;
     const pw = parentFromMeta?.width;
     const ph = parentFromMeta?.height;
 
     for (const entry of list) {
-      if (typeof entry === "string" && entry) {
+      if (typeof entry === 'string' && entry) {
         out.push({ url: entry });
         continue;
       }
-      if (!entry || typeof entry !== "object") continue;
+      if (!entry || typeof entry !== 'object') continue;
       const o = entry as Record<string, unknown>;
-      const url = typeof o.url === "string" ? o.url : null;
+      const url = typeof o.url === 'string' ? o.url : null;
       if (!url) continue;
 
       let bbox = parseBBox(o.bbox);
@@ -214,21 +245,28 @@ function parseImagesRecord(
 }
 
 function extractUrlFromDetectEntry(entry: unknown): string | null {
-  if (!entry || typeof entry !== "object") return null;
+  if (!entry || typeof entry !== 'object') return null;
   const o = entry as Record<string, unknown>;
-  if (typeof o.url === "string" && o.url.length > 0) return o.url;
-  if (typeof o.image === "string" && o.image.length > 0) {
+  if (typeof o.url === 'string' && o.url.length > 0) return o.url;
+  if (typeof o.image === 'string' && o.image.length > 0) {
     const im = o.image;
-    if (im.startsWith("data:") || im.startsWith("http://") || im.startsWith("https://")) return im;
+    if (
+      im.startsWith('data:') ||
+      im.startsWith('http://') ||
+      im.startsWith('https://')
+    )
+      return im;
     return `data:image/jpeg;base64,${im}`;
   }
   return null;
 }
 
 /**
- * Parse Flask multipart / JSON detect payload: ordered urls; bbox = source-space rect when present.
+ * Parse  Flask multipart / JSON detect payload: ordered urls; bbox = source-space rect when present.
  */
-function parseDetectCrops(data: Record<string, unknown>): { url: string; bbox?: CropBox }[] {
+function parseDetectCrops(
+  data: Record<string, unknown>,
+): { url: string; bbox?: CropBox }[] {
   const imageMeta = data.image_meta as Record<string, unknown> | undefined;
   if (data.images) {
     const fromImages = parseImagesRecord(data.images, imageMeta);
@@ -246,14 +284,19 @@ function parseDetectCrops(data: Record<string, unknown>): { url: string; bbox?: 
   if (Array.isArray(upscaled) && upscaled.length > 0) {
     const cropsArr = Array.isArray(data.crops) ? (data.crops as unknown[]) : [];
     upscaled.forEach((u, i) => {
-      if (typeof u !== "string" || !u) return;
+      if (typeof u !== 'string' || !u) return;
       let bbox: CropBox | undefined = bboxesList[i];
       const cropRow = cropsArr[i];
-      if (!bbox && cropRow && typeof cropRow === "object") {
+      if (!bbox && cropRow && typeof cropRow === 'object') {
         const cr = cropRow as Record<string, unknown>;
         bbox = parseBBox(cr.bbox) ?? undefined;
         if (!bbox && parentSize && cr.bbox_norm) {
-          bbox = bboxNormToPixels(cr.bbox_norm, parentSize.width, parentSize.height) ?? undefined;
+          bbox =
+            bboxNormToPixels(
+              cr.bbox_norm,
+              parentSize.width,
+              parentSize.height,
+            ) ?? undefined;
         }
       }
       out.push(bbox ? { url: u, bbox } : { url: u });
@@ -271,14 +314,20 @@ function parseDetectCrops(data: Record<string, unknown>): { url: string; bbox?: 
       const eo = entry as Record<string, unknown>;
       let bbox: CropBox | null = parseBBox(eo?.bbox);
       if (!bbox && parentSize && eo?.bbox_norm) {
-        bbox = bboxNormToPixels(eo.bbox_norm, parentSize.width, parentSize.height);
+        bbox = bboxNormToPixels(
+          eo.bbox_norm,
+          parentSize.width,
+          parentSize.height,
+        );
       }
       if (!bbox && bboxesList[i]) bbox = bboxesList[i]!;
       const idx = asNum(eo?.index, i);
       rows.push({ url, bbox: bbox ?? undefined, idx });
     });
     rows.sort((a, b) => a.idx - b.idx);
-    rows.forEach((r) => out.push(r.bbox ? { url: r.url, bbox: r.bbox } : { url: r.url }));
+    rows.forEach((r) =>
+      out.push(r.bbox ? { url: r.url, bbox: r.bbox } : { url: r.url }),
+    );
   };
 
   tryArray(data.crops);
@@ -291,13 +340,20 @@ function parseDetectCrops(data: Record<string, unknown>): { url: string; bbox?: 
 }
 
 /** Legacy: string[] per URL, or [{ url }] objects */
-function resolveCropUrls(images: Record<string, unknown>, requestedUrl: string): string[] {
+function resolveCropUrls(
+  images: Record<string, unknown>,
+  requestedUrl: string,
+): string[] {
   const urlsFromList = (list: unknown): string[] => {
     if (!Array.isArray(list)) return [];
     const out: string[] = [];
     for (const entry of list) {
-      if (typeof entry === "string" && entry) out.push(entry);
-      else if (entry && typeof entry === "object" && typeof (entry as Record<string, unknown>).url === "string") {
+      if (typeof entry === 'string' && entry) out.push(entry);
+      else if (
+        entry &&
+        typeof entry === 'object' &&
+        typeof (entry as Record<string, unknown>).url === 'string'
+      ) {
         out.push((entry as Record<string, unknown>).url as string);
       }
     }
@@ -308,7 +364,9 @@ function resolveCropUrls(images: Record<string, unknown>, requestedUrl: string):
   if (direct.length) return direct;
   const keys = Object.keys(images);
   const hit = keys.find(
-    (k) => decodeURIComponent(k) === decodeURIComponent(requestedUrl) || k === requestedUrl
+    (k) =>
+      decodeURIComponent(k) === decodeURIComponent(requestedUrl) ||
+      k === requestedUrl,
   );
   if (hit) {
     const fromHit = urlsFromList(images[hit]);
@@ -321,12 +379,17 @@ function resolveCropUrls(images: Record<string, unknown>, requestedUrl: string):
   return [];
 }
 
-function resolveErrorForUrl(errors: Record<string, string> | undefined, requestedUrl: string): string | undefined {
+function resolveErrorForUrl(
+  errors: Record<string, string> | undefined,
+  requestedUrl: string,
+): string | undefined {
   if (!errors) return undefined;
   if (errors[requestedUrl]) return errors[requestedUrl];
   const keys = Object.keys(errors);
   const hit = keys.find(
-    (k) => decodeURIComponent(k) === decodeURIComponent(requestedUrl) || k === requestedUrl
+    (k) =>
+      decodeURIComponent(k) === decodeURIComponent(requestedUrl) ||
+      k === requestedUrl,
   );
   if (hit) return errors[hit];
   if (keys.length === 1) return errors[keys[0]!];
@@ -336,9 +399,10 @@ function resolveErrorForUrl(errors: Record<string, string> | undefined, requeste
 function loadRemoteImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new window.Image();
-    img.crossOrigin = "anonymous";
+    img.crossOrigin = 'anonymous';
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`Failed to load image: ${url.slice(0, 80)}…`));
+    img.onerror = () =>
+      reject(new Error(`Failed to load image: ${url.slice(0, 80)}…`));
     img.src = url;
   });
 }
@@ -375,10 +439,14 @@ type Item = {
   parentSpaceBbox?: CropBox;
 };
 
-function getRootSourceId(item: Item, sourceImages: SourceImage[]): string | null {
+function getRootSourceId(
+  item: Item,
+  sourceImages: SourceImage[],
+): string | null {
   const src = sourceImages.find((s) => s.id === item.sourceImageId);
   if (!src) return null;
-  if (src.isDerivedFromAi && src.derivedFromSourceId) return src.derivedFromSourceId;
+  if (src.isDerivedFromAi && src.derivedFromSourceId)
+    return src.derivedFromSourceId;
   if (!src.isDerivedFromAi) return src.id;
   return null;
 }
@@ -392,7 +460,7 @@ function getRootSourceId(item: Item, sourceImages: SourceImage[]): string | null
 function relayoutComposedItems(
   items: Item[],
   sourceImages: SourceImage[],
-  canvasSize: { width: number; height: number }
+  canvasSize: { width: number; height: number },
 ): Item[] {
   if (items.length === 0) return items;
 
@@ -412,10 +480,14 @@ function relayoutComposedItems(
 
   for (let ri = 0; ri < rootsOrdered.length; ri++) {
     const rootId = rootsOrdered[ri]!;
-    const orig = sourceImages.find((s) => s.id === rootId && !s.isDerivedFromAi);
+    const orig = sourceImages.find(
+      (s) => s.id === rootId && !s.isDerivedFromAi,
+    );
     if (!orig) continue;
 
-    const groupItems = items.filter((it) => getRootSourceId(it, sourceImages) === rootId);
+    const groupItems = items.filter(
+      (it) => getRootSourceId(it, sourceImages) === rootId,
+    );
     if (groupItems.length === 0) continue;
 
     const rect =
@@ -446,7 +518,7 @@ function relayoutComposedItems(
         x: ox + c.x * scale,
         y: oy + c.y * scale,
         width: Math.max(8, c.width * scale),
-        height: Math.max(8, c.height * scale)
+        height: Math.max(8, c.height * scale),
       });
     }
 
@@ -457,7 +529,7 @@ function relayoutComposedItems(
           x: ox + b.x * scale,
           y: oy + b.y * scale,
           width: Math.max(8, b.width * scale),
-          height: Math.max(8, b.height * scale)
+          height: Math.max(8, b.height * scale),
         });
       }
     }
@@ -474,7 +546,9 @@ function relayoutComposedItems(
       gh = contentH * split;
     }
 
-    const sortedDerived = [...derivedForGrid].sort((a, b) => a.zIndex - b.zIndex);
+    const sortedDerived = [...derivedForGrid].sort(
+      (a, b) => a.zIndex - b.zIndex,
+    );
     const n = sortedDerived.length;
     if (n > 0) {
       const cols = Math.ceil(Math.sqrt(n));
@@ -500,7 +574,7 @@ function relayoutComposedItems(
           x: cx + (cellW - w) / 2,
           y: cy + (cellH - h) / 2,
           width: Math.max(8, w),
-          height: Math.max(8, h)
+          height: Math.max(8, h),
         });
       });
     }
@@ -515,7 +589,7 @@ function relayoutComposedItems(
 function ItemThumb({
   item,
   source,
-  listingBackground
+  listingBackground,
 }: {
   item: Item;
   source: SourceImage;
@@ -523,12 +597,12 @@ function ItemThumb({
 }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const rgbOk = hexToRgb(listingBackground);
-  const bg = rgbOk ? normalizeHexColor(listingBackground) : "#ffffff";
+  const bg = rgbOk ? normalizeHexColor(listingBackground) : '#ffffff';
 
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const w = 96;
     const h = 96;
@@ -547,10 +621,10 @@ function ItemThumb({
         0,
         0,
         w,
-        h
+        h,
       );
     } catch {
-      ctx.fillStyle = "#e2e8f0";
+      ctx.fillStyle = '#e2e8f0';
       ctx.fillRect(0, 0, w, h);
     }
   }, [item, source, bg]);
@@ -562,19 +636,19 @@ function ItemThumb({
         width: 96,
         height: 96,
         borderRadius: 10,
-        border: "1px solid #cbd5e1",
-        display: "block",
-        background: bg
+        border: '1px solid #cbd5e1',
+        display: 'block',
+        background: bg,
       }}
     />
   );
 }
 
 const cardStyle: React.CSSProperties = {
-  background: "#ffffff",
-  border: "1px solid #e2e8f0",
+  background: '#ffffff',
+  border: '1px solid #e2e8f0',
   borderRadius: 16,
-  padding: 16
+  padding: 16,
 };
 
 export default function ComposerClient() {
@@ -582,23 +656,38 @@ export default function ComposerClient() {
   const finalCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [sourceImages, setSourceImages] = useState<SourceImage[]>([]);
-  const [activeSourceImageId, setActiveSourceImageId] = useState<string | null>(null);
+  const [activeSourceImageId, setActiveSourceImageId] = useState<string | null>(
+    null,
+  );
   const [displayScale, setDisplayScale] = useState(1);
-  const [crop, setCrop] = useState<CropBox>({ x: 40, y: 40, width: 180, height: 140 });
+  const [crop, setCrop] = useState<CropBox>({
+    x: 40,
+    y: 40,
+    width: 180,
+    height: 140,
+  });
   const [isDrawingCrop, setIsDrawingCrop] = useState(false);
-  const [dragMode, setDragMode] = useState<null | "moveCrop" | "moveItem">(null);
+  const [dragMode, setDragMode] = useState<null | 'moveCrop' | 'moveItem'>(
+    null,
+  );
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [canvasSize, setCanvasSize] = useState(INITIAL_CANVAS);
-  const [bgHsl, setBgHsl] = useState(() => hexToHsl(INITIAL_CANVAS.background) ?? { h: 0, s: 0, l: 100 });
+  const [bgHsl, setBgHsl] = useState(
+    () => hexToHsl(INITIAL_CANVAS.background) ?? { h: 0, s: 0, l: 100 },
+  );
   const [items, setItems] = useState<Item[]>([]);
-  const [aiDetectingForSourceId, setAiDetectingForSourceId] = useState<string | null>(null);
+  const [aiDetectingForSourceId, setAiDetectingForSourceId] = useState<
+    string | null
+  >(null);
   const [aiError, setAiError] = useState<string | null>(null);
 
   useEffect(() => {
     const p = hexToHsl(normalizeHexColor(canvasSize.background));
     if (!p) return;
-    setBgHsl((prev) => (prev.h === p.h && prev.s === p.s && prev.l === p.l ? prev : p));
+    setBgHsl((prev) =>
+      prev.h === p.h && prev.s === p.s && prev.l === p.l ? prev : p,
+    );
   }, [canvasSize.background]);
 
   const bgHslRef = useRef(bgHsl);
@@ -611,18 +700,21 @@ export default function ComposerClient() {
 
   const previewListingHex = useMemo(
     () => normalizeHexColor(hslToHex(bgHsl.h, bgHsl.s, bgHsl.l)),
-    [bgHsl.h, bgHsl.s, bgHsl.l]
+    [bgHsl.h, bgHsl.s, bgHsl.l],
   );
-  const appliedListingHex = useMemo(() => normalizeHexColor(canvasSize.background), [canvasSize.background]);
+  const appliedListingHex = useMemo(
+    () => normalizeHexColor(canvasSize.background),
+    [canvasSize.background],
+  );
   const listingBgNeedsApply = previewListingHex !== appliedListingHex;
 
   /** Text on pool tiles uses the applied listing bg (same as thumbnails). */
   const poolTileText = useMemo(() => {
     const L = relativeLuminance(appliedListingHex);
     if (L > 0.45) {
-      return { name: "#0f172a", meta: "#64748b" as const };
+      return { name: '#0f172a', meta: '#64748b' as const };
     }
-    return { name: "#f8fafc", meta: "#cbd5e1" as const };
+    return { name: '#f8fafc', meta: '#cbd5e1' as const };
   }, [appliedListingHex]);
 
   const sourceImagesRef = useRef<SourceImage[]>([]);
@@ -638,13 +730,15 @@ export default function ComposerClient() {
   /** Re-run proportional layout when output dimensions change */
   useEffect(() => {
     setItems((prev) =>
-      prev.length ? relayoutComposedItems(prev, sourceImagesRef.current, canvasSize) : prev
+      prev.length
+        ? relayoutComposedItems(prev, sourceImagesRef.current, canvasSize)
+        : prev,
     );
   }, [canvasSize.width, canvasSize.height]);
 
   const listableSources = useMemo(
     () => sourceImages.filter((s) => !s.isDerivedFromAi),
-    [sourceImages]
+    [sourceImages],
   );
 
   const activeSourceImage = useMemo(() => {
@@ -664,7 +758,7 @@ export default function ComposerClient() {
 
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedItemId) ?? null,
-    [items, selectedItemId]
+    [items, selectedItemId],
   );
 
   const redrawSource = useCallback(() => {
@@ -672,7 +766,7 @@ export default function ComposerClient() {
     const image = activeSourceImage?.img ?? null;
     if (!canvas || !image) return;
 
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const maxPreviewWidth = 680;
@@ -686,12 +780,22 @@ export default function ComposerClient() {
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
 
     ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.clearRect(crop.x * scale, crop.y * scale, crop.width * scale, crop.height * scale);
-    ctx.strokeStyle = "#2563eb";
+    ctx.clearRect(
+      crop.x * scale,
+      crop.y * scale,
+      crop.width * scale,
+      crop.height * scale,
+    );
+    ctx.strokeStyle = '#2563eb';
     ctx.lineWidth = 2;
-    ctx.strokeRect(crop.x * scale, crop.y * scale, crop.width * scale, crop.height * scale);
+    ctx.strokeRect(
+      crop.x * scale,
+      crop.y * scale,
+      crop.width * scale,
+      crop.height * scale,
+    );
     ctx.restore();
   }, [activeSourceImage, crop]);
 
@@ -702,7 +806,7 @@ export default function ComposerClient() {
     canvas.width = canvasSize.width;
     canvas.height = canvasSize.height;
 
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -730,13 +834,18 @@ export default function ComposerClient() {
         -item.width / 2,
         -item.height / 2,
         item.width,
-        item.height
+        item.height,
       );
 
       if (item.id === selectedItemId) {
-        ctx.strokeStyle = "#2563eb";
+        ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 3;
-        ctx.strokeRect(-item.width / 2, -item.height / 2, item.width, item.height);
+        ctx.strokeRect(
+          -item.width / 2,
+          -item.height / 2,
+          item.width,
+          item.height,
+        );
       }
       ctx.restore();
     });
@@ -769,7 +878,7 @@ export default function ComposerClient() {
           publicUrl: null,
           file,
           isDerivedFromAi: false,
-          derivedFromSourceId: null
+          derivedFromSourceId: null,
         };
 
         setSourceImages((prev) => [...prev, entry]);
@@ -779,21 +888,25 @@ export default function ComposerClient() {
             x: 20,
             y: 20,
             width: Math.min(220, img.naturalWidth - 20),
-            height: Math.min(160, img.naturalHeight - 20)
+            height: Math.min(160, img.naturalHeight - 20),
           });
         }
       };
       img.src = url;
     });
 
-    e.target.value = "";
+    e.target.value = '';
   };
 
-  const getCanvasCoords = (clientX: number, clientY: number, canvas: HTMLCanvasElement) => {
+  const getCanvasCoords = (
+    clientX: number,
+    clientY: number,
+    canvas: HTMLCanvasElement,
+  ) => {
     const rect = canvas.getBoundingClientRect();
     return {
       x: clientX - rect.left,
-      y: clientY - rect.top
+      y: clientY - rect.top,
     };
   };
 
@@ -812,7 +925,7 @@ export default function ComposerClient() {
       sy <= crop.y + crop.height;
 
     if (inside) {
-      setDragMode("moveCrop");
+      setDragMode('moveCrop');
       setDragOffset({ x: sx - crop.x, y: sy - crop.y });
     } else {
       setIsDrawingCrop(true);
@@ -827,11 +940,19 @@ export default function ComposerClient() {
     const sx = pos.x / displayScale;
     const sy = pos.y / displayScale;
 
-    if (dragMode === "moveCrop") {
+    if (dragMode === 'moveCrop') {
       setCrop((prev) => ({
         ...prev,
-        x: clamp(sx - dragOffset.x, 0, Math.max(0, activeSourceImage.naturalWidth - prev.width)),
-        y: clamp(sy - dragOffset.y, 0, Math.max(0, activeSourceImage.naturalHeight - prev.height))
+        x: clamp(
+          sx - dragOffset.x,
+          0,
+          Math.max(0, activeSourceImage.naturalWidth - prev.width),
+        ),
+        y: clamp(
+          sy - dragOffset.y,
+          0,
+          Math.max(0, activeSourceImage.naturalHeight - prev.height),
+        ),
       }));
       return;
     }
@@ -841,7 +962,7 @@ export default function ComposerClient() {
         x: Math.min(prev.x, sx),
         y: Math.min(prev.y, sy),
         width: Math.abs(sx - prev.x),
-        height: Math.abs(sy - prev.y)
+        height: Math.abs(sy - prev.y),
       }));
     }
   };
@@ -867,16 +988,25 @@ export default function ComposerClient() {
         width: 1,
         height: 1,
         rotation: 0,
-        zIndex: maxZ + 1
+        zIndex: maxZ + 1,
       };
       const next = [...prev, newItem];
-      return relayoutComposedItems(next, sourceImagesRef.current, canvasSizeRef.current);
+      return relayoutComposedItems(
+        next,
+        sourceImagesRef.current,
+        canvasSizeRef.current,
+      );
     });
     setSelectedItemId(id);
   };
 
   const pointInItem = (x: number, y: number, item: Item) => {
-    return x >= item.x && x <= item.x + item.width && y >= item.y && y <= item.y + item.height;
+    return (
+      x >= item.x &&
+      x <= item.x + item.width &&
+      y >= item.y &&
+      y <= item.y + item.height
+    );
   };
 
   const onFinalMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -890,7 +1020,7 @@ export default function ComposerClient() {
 
     if (hit) {
       setSelectedItemId(hit.id);
-      setDragMode("moveItem");
+      setDragMode('moveItem');
       setDragOffset({ x: pos.x - hit.x, y: pos.y - hit.y });
     } else {
       setSelectedItemId(null);
@@ -898,7 +1028,7 @@ export default function ComposerClient() {
   };
 
   const onFinalMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (dragMode !== "moveItem" || !selectedItemId) return;
+    if (dragMode !== 'moveItem' || !selectedItemId) return;
     const canvas = finalCanvasRef.current;
     if (!canvas) return;
     const pos = getCanvasCoords(e.clientX, e.clientY, canvas);
@@ -909,10 +1039,14 @@ export default function ComposerClient() {
           ? {
               ...item,
               x: clamp(pos.x - dragOffset.x, 0, canvasSize.width - item.width),
-              y: clamp(pos.y - dragOffset.y, 0, canvasSize.height - item.height)
+              y: clamp(
+                pos.y - dragOffset.y,
+                0,
+                canvasSize.height - item.height,
+              ),
             }
-          : item
-      )
+          : item,
+      ),
     );
   };
 
@@ -920,7 +1054,11 @@ export default function ComposerClient() {
 
   const updateSelectedItem = (patch: Partial<Item>) => {
     if (!selectedItemId) return;
-    setItems((prev) => prev.map((item) => (item.id === selectedItemId ? { ...item, ...patch } : item)));
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === selectedItemId ? { ...item, ...patch } : item,
+      ),
+    );
   };
 
   const bringForward = () => {
@@ -934,7 +1072,11 @@ export default function ComposerClient() {
     setItems((prev) => {
       const next = prev.filter((item) => item.id !== selectedItemId);
       return next.length
-        ? relayoutComposedItems(next, sourceImagesRef.current, canvasSizeRef.current)
+        ? relayoutComposedItems(
+            next,
+            sourceImagesRef.current,
+            canvasSizeRef.current,
+          )
         : next;
     });
     setSelectedItemId(null);
@@ -954,7 +1096,7 @@ export default function ComposerClient() {
       x: 20,
       y: 20,
       width: Math.min(220, img.naturalWidth - 20),
-      height: Math.min(160, img.naturalHeight - 20)
+      height: Math.min(160, img.naturalHeight - 20),
     });
   };
 
@@ -963,32 +1105,40 @@ export default function ComposerClient() {
     setAiDetectingForSourceId(sourceId);
     try {
       const source = sourceImagesRef.current.find((s) => s.id === sourceId);
-      if (!source) throw new Error("Source image not found.");
+      if (!source) throw new Error('Source image not found.');
       if (!source.file) {
-        throw new Error("Missing original file. Re-upload this image to run AI crop.");
+        throw new Error(
+          'Missing original file. Re-upload this image to run AI crop.',
+        );
       }
 
       const fd = new FormData();
-      const name = source.file.name || "source.jpg";
-      fd.append("file", source.file, name);
-      fd.append("image", source.file, name);
-      fd.append("upscale", "true");
-      fd.append("bytescale", "true");
+      const name = source.file.name || 'source.jpg';
+      fd.append('file', source.file, name);
+      fd.append('image', source.file, name);
+      fd.append('upscale', 'true');
+      fd.append('bytescale', 'true');
 
-      const detectRes = await fetch("/api/detect-proxy", {
-        method: "POST",
-        body: fd
+      const detectRes = await fetch('/api/detect-proxy', {
+        method: 'POST',
+        body: fd,
       });
 
       const data = (await detectRes.json()) as DetectResponse;
       const rec = data as Record<string, unknown>;
 
       if (!detectRes.ok) {
-        throw new Error(data.error || `Detect proxy error (${detectRes.status})`);
+        throw new Error(
+          data.error || `Detect proxy error (${detectRes.status})`,
+        );
       }
 
       if (data.ok === false) {
-        throw new Error(typeof data.error === "string" ? data.error : "Detect returned ok: false");
+        throw new Error(
+          typeof data.error === 'string'
+            ? data.error
+            : 'Detect returned ok: false',
+        );
       }
 
       let parsed = parseDetectCrops(rec);
@@ -997,12 +1147,18 @@ export default function ComposerClient() {
         let publicUrl = source.publicUrl;
         if (!publicUrl) {
           const upFd = new FormData();
-          upFd.append("file", source.file);
-          const up = await fetch("/api/host-image", { method: "POST", body: upFd });
+          upFd.append('file', source.file);
+          const up = await fetch('/api/host-image', {
+            method: 'POST',
+            body: upFd,
+          });
           const upJson = (await up.json()) as { url?: string; error?: string };
-          if (!up.ok) throw new Error(upJson.error || `Host failed (${up.status})`);
+          if (!up.ok)
+            throw new Error(upJson.error || `Host failed (${up.status})`);
           publicUrl = upJson.url!;
-          setSourceImages((prev) => prev.map((s) => (s.id === sourceId ? { ...s, publicUrl } : s)));
+          setSourceImages((prev) =>
+            prev.map((s) => (s.id === sourceId ? { ...s, publicUrl } : s)),
+          );
         }
         const perUrlError = resolveErrorForUrl(data.errors, publicUrl);
         if (perUrlError) setAiError(perUrlError);
@@ -1011,11 +1167,12 @@ export default function ComposerClient() {
       }
 
       if (parsed.length === 0) {
-        setAiError("No crops returned (no URLs or images in response).");
+        setAiError('No crops returned (no URLs or images in response).');
         return;
       }
 
-      const sourceSnapshot = sourceImagesRef.current.find((s) => s.id === sourceId) ?? source;
+      const sourceSnapshot =
+        sourceImagesRef.current.find((s) => s.id === sourceId) ?? source;
 
       const newSources: SourceImage[] = await Promise.all(
         parsed.map(async (row, i) => {
@@ -1028,12 +1185,12 @@ export default function ComposerClient() {
             img,
             naturalWidth: img.naturalWidth,
             naturalHeight: img.naturalHeight,
-            publicUrl: row.url.startsWith("data:") ? null : row.url,
+            publicUrl: row.url.startsWith('data:') ? null : row.url,
             file: null,
             isDerivedFromAi: true,
-            derivedFromSourceId: sourceSnapshot.id
+            derivedFromSourceId: sourceSnapshot.id,
           };
-        })
+        }),
       );
 
       const mergedSources = [...sourceImagesRef.current, ...newSources];
@@ -1052,7 +1209,7 @@ export default function ComposerClient() {
               x: 0,
               y: 0,
               width: src.naturalWidth,
-              height: src.naturalHeight
+              height: src.naturalHeight,
             },
             x: 0,
             y: 0,
@@ -1060,13 +1217,17 @@ export default function ComposerClient() {
             height: 1,
             rotation: 0,
             zIndex: maxZ + i + 1,
-            parentSpaceBbox: row.bbox
+            parentSpaceBbox: row.bbox,
           };
         });
-        return relayoutComposedItems([...prev, ...additions], mergedSources, canvasSizeRef.current);
+        return relayoutComposedItems(
+          [...prev, ...additions],
+          mergedSources,
+          canvasSizeRef.current,
+        );
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "AI crop failed";
+      const message = e instanceof Error ? e.message : 'AI crop failed';
       setAiError(message);
     } finally {
       setAiDetectingForSourceId(null);
@@ -1076,221 +1237,350 @@ export default function ComposerClient() {
   const downloadImage = () => {
     const canvas = finalCanvasRef.current;
     if (!canvas) return;
-    const link = document.createElement("a");
-    link.href = canvas.toDataURL("image/png");
-    link.download = "hearing-aid-listing.png";
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = 'hearing-aid-listing.png';
     link.click();
   };
 
   return (
-    <main style={{ minHeight: "100vh", padding: 24 }}>
-      <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+    <main style={{ minHeight: '100vh', padding: 24 }}>
+      <div style={{ maxWidth: 1400, margin: '0 auto' }}>
         <h1 style={{ marginTop: 0 }}>Hearing Aid eBay Image Composer</h1>
-        <p style={{ color: "#475569", marginBottom: 24 }}>
-          Upload product photos, crop items from any image, arrange them into one final listing image, then download.
+        <p style={{ color: '#475569', marginBottom: 24 }}>
+          Upload product photos, crop items from any image, arrange them into
+          one final listing image, then download.
         </p>
 
-        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "340px 1fr" }}>
+        <div
+          style={{ display: 'grid', gap: 16, gridTemplateColumns: '340px 1fr' }}
+        >
           <section style={cardStyle}>
             <h3 style={{ marginTop: 0 }}>Controls</h3>
 
             <div style={{ marginBottom: 14 }}>
-              <label htmlFor="upload" style={{ display: "block", marginBottom: 6 }}>
+              <label
+                htmlFor='upload'
+                style={{ display: 'block', marginBottom: 6 }}
+              >
                 Upload source image(s)
               </label>
-              <input id="upload" type="file" accept="image/*" multiple onChange={onUpload} />
-            </div>
-
-            <div style={{ marginBottom: 10 }}>
-              <label htmlFor="width" style={{ display: "block", marginBottom: 6 }}>
-                Final canvas width
-              </label>
               <input
-                id="width"
-                type="number"
-                value={canvasSize.width}
-                onChange={(e) => setCanvasSize((p) => ({ ...p, width: Number(e.target.value) || 1200 }))}
+                id='upload'
+                type='file'
+                accept='image/*'
+                multiple
+                onChange={onUpload}
               />
             </div>
 
             <div style={{ marginBottom: 10 }}>
-              <label htmlFor="height" style={{ display: "block", marginBottom: 6 }}>
+              <label
+                htmlFor='width'
+                style={{ display: 'block', marginBottom: 6 }}
+              >
+                Final canvas width
+              </label>
+              <input
+                id='width'
+                type='number'
+                value={canvasSize.width}
+                onChange={(e) =>
+                  setCanvasSize((p) => ({
+                    ...p,
+                    width: Number(e.target.value) || 1200,
+                  }))
+                }
+              />
+            </div>
+
+            <div style={{ marginBottom: 10 }}>
+              <label
+                htmlFor='height'
+                style={{ display: 'block', marginBottom: 6 }}
+              >
                 Final canvas height
               </label>
               <input
-                id="height"
-                type="number"
+                id='height'
+                type='number'
                 value={canvasSize.height}
-                onChange={(e) => setCanvasSize((p) => ({ ...p, height: Number(e.target.value) || 900 }))}
+                onChange={(e) =>
+                  setCanvasSize((p) => ({
+                    ...p,
+                    height: Number(e.target.value) || 900,
+                  }))
+                }
               />
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "block", marginBottom: 6, fontWeight: 600, fontSize: 14 }}>
+              <div
+                style={{
+                  display: 'block',
+                  marginBottom: 6,
+                  fontWeight: 600,
+                  fontSize: 14,
+                }}
+              >
                 Background (exact value)
               </div>
-              <p style={{ color: "#64748b", fontSize: 12, marginTop: 0, marginBottom: 8 }}>
-                Use <strong>HSL + Apply</strong> beside the final listing image, or set hex here (applies immediately).
+              <p
+                style={{
+                  color: '#64748b',
+                  fontSize: 12,
+                  marginTop: 0,
+                  marginBottom: 8,
+                }}
+              >
+                Use <strong>HSL + Apply</strong> beside the final listing image,
+                or set hex here (applies immediately).
               </p>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                }}
+              >
                 <input
-                  id="bg"
-                  aria-label="Background hex"
+                  id='bg'
+                  aria-label='Background hex'
                   value={canvasSize.background}
-                  onChange={(e) => setCanvasSize((p) => ({ ...p, background: e.target.value }))}
-                  placeholder="#hex"
-                  style={{ flex: "1 1 120px", minWidth: 100 }}
+                  onChange={(e) =>
+                    setCanvasSize((p) => ({ ...p, background: e.target.value }))
+                  }
+                  placeholder='#hex'
+                  style={{ flex: '1 1 120px', minWidth: 100 }}
                 />
                 <input
-                  type="color"
-                  aria-label="Background color picker"
+                  type='color'
+                  aria-label='Background color picker'
                   value={
                     /^#[0-9a-fA-F]{6}$/.test(canvasSize.background.trim())
                       ? canvasSize.background.trim()
-                      : "#ffffff"
+                      : '#ffffff'
                   }
-                  onChange={(e) => setCanvasSize((p) => ({ ...p, background: e.target.value }))}
-                  style={{ width: 44, height: 36, padding: 2, cursor: "pointer" }}
+                  onChange={(e) =>
+                    setCanvasSize((p) => ({ ...p, background: e.target.value }))
+                  }
+                  style={{
+                    width: 44,
+                    height: 36,
+                    padding: 2,
+                    cursor: 'pointer',
+                  }}
                 />
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-              <button type="button" onClick={addCropAsItem}>
+            <div
+              style={{
+                display: 'flex',
+                gap: 8,
+                flexWrap: 'wrap',
+                marginBottom: 14,
+              }}
+            >
+              <button type='button' onClick={addCropAsItem}>
                 Add crop
               </button>
-              <button type="button" onClick={resetLayout}>
+              <button type='button' onClick={resetLayout}>
                 Reset
               </button>
-              <button type="button" onClick={downloadImage}>
+              <button type='button' onClick={downloadImage}>
                 Download
               </button>
             </div>
 
             {selectedItem ? (
-              <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 12 }}>
+              <div
+                style={{
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 12,
+                  padding: 12,
+                }}
+              >
                 <div style={{ marginBottom: 12 }}>
-                  <label htmlFor="itemName" style={{ display: "block", marginBottom: 6 }}>
+                  <label
+                    htmlFor='itemName'
+                    style={{ display: 'block', marginBottom: 6 }}
+                  >
                     Selected item name
                   </label>
                   <input
-                    id="itemName"
+                    id='itemName'
                     value={selectedItem.name}
-                    onChange={(e) => updateSelectedItem({ name: e.target.value })}
+                    onChange={(e) =>
+                      updateSelectedItem({ name: e.target.value })
+                    }
                   />
                 </div>
 
                 <div style={{ marginBottom: 12 }}>
-                  <label htmlFor="itemWidth" style={{ display: "block", marginBottom: 6 }}>
+                  <label
+                    htmlFor='itemWidth'
+                    style={{ display: 'block', marginBottom: 6 }}
+                  >
                     Width: {Math.round(selectedItem.width)} px
                   </label>
                   <input
-                    id="itemWidth"
-                    type="range"
+                    id='itemWidth'
+                    type='range'
                     value={selectedItem.width}
                     min={30}
                     max={500}
                     step={1}
                     onChange={(e) => {
                       const value = Number(e.target.value);
-                      const aspect = selectedItem.crop.width / selectedItem.crop.height;
-                      updateSelectedItem({ width: value, height: value / aspect });
+                      const aspect =
+                        selectedItem.crop.width / selectedItem.crop.height;
+                      updateSelectedItem({
+                        width: value,
+                        height: value / aspect,
+                      });
                     }}
                   />
                 </div>
 
                 <div style={{ marginBottom: 12 }}>
-                  <label htmlFor="rotation" style={{ display: "block", marginBottom: 6 }}>
+                  <label
+                    htmlFor='rotation'
+                    style={{ display: 'block', marginBottom: 6 }}
+                  >
                     Rotation: {selectedItem.rotation}°
                   </label>
                   <input
-                    id="rotation"
-                    type="range"
+                    id='rotation'
+                    type='range'
                     value={selectedItem.rotation}
                     min={-180}
                     max={180}
                     step={1}
-                    onChange={(e) => updateSelectedItem({ rotation: Number(e.target.value) })}
+                    onChange={(e) =>
+                      updateSelectedItem({ rotation: Number(e.target.value) })
+                    }
                   />
                 </div>
 
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button type="button" onClick={bringForward}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button type='button' onClick={bringForward}>
                     Bring forward
                   </button>
-                  <button type="button" onClick={removeSelected}>
+                  <button type='button' onClick={removeSelected}>
                     Delete
                   </button>
                 </div>
               </div>
             ) : (
-              <p style={{ color: "#64748b", margin: 0 }}>Select an item on the final canvas to edit size and rotation.</p>
+              <p style={{ color: '#64748b', margin: 0 }}>
+                Select an item on the final canvas to edit size and rotation.
+              </p>
             )}
           </section>
 
           <section style={cardStyle}>
             <h3 style={{ marginTop: 0 }}>Source image crop tool</h3>
-            <p style={{ color: "#475569" }}>
-              Switch between uploaded images, drag to create crop, then add to the shared pool.
+            <p style={{ color: '#475569' }}>
+              Switch between uploaded images, drag to create crop, then add to
+              the shared pool.
             </p>
 
             {listableSources.length > 0 ? (
-              <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 12, marginBottom: 12 }}>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>Source images</div>
-                <div style={{ display: "grid", gap: 8 }}>
+              <div
+                style={{
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 12,
+                  padding: 12,
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                  Source images
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
                   {listableSources.map((img) => (
                     <div
                       key={img.id}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
+                        display: 'flex',
+                        alignItems: 'center',
                         gap: 8,
-                        flexWrap: "wrap"
+                        flexWrap: 'wrap',
                       }}
                     >
                       <button
-                        type="button"
+                        type='button'
                         onClick={() => selectSourceImage(img.id)}
                         style={{
-                          flex: "1 1 160px",
-                          textAlign: "left",
-                          padding: "8px 10px",
+                          flex: '1 1 160px',
+                          textAlign: 'left',
+                          padding: '8px 10px',
                           borderRadius: 10,
-                          border: `1px solid ${img.id === activeSourceImageId ? "#3b82f6" : "#cbd5e1"}`,
-                          background: img.id === activeSourceImageId ? "#eff6ff" : "#ffffff"
+                          border: `1px solid ${img.id === activeSourceImageId ? '#3b82f6' : '#cbd5e1'}`,
+                          background:
+                            img.id === activeSourceImageId
+                              ? '#eff6ff'
+                              : '#ffffff',
                         }}
                       >
                         {img.name} ({img.naturalWidth}x{img.naturalHeight})
                       </button>
                       <button
-                        type="button"
+                        type='button'
                         disabled={aiDetectingForSourceId !== null}
                         onClick={(e) => {
                           e.stopPropagation();
                           void onAiCropForSource(img.id);
                         }}
                         style={{
-                          padding: "8px 14px",
+                          padding: '8px 14px',
                           borderRadius: 10,
-                          border: "1px solid #0f172a",
-                          background: aiDetectingForSourceId === img.id ? "#e2e8f0" : "#0f172a",
-                          color: aiDetectingForSourceId === img.id ? "#64748b" : "#ffffff",
-                          cursor: aiDetectingForSourceId !== null ? "not-allowed" : "pointer",
-                          minWidth: 72
+                          border: '1px solid #0f172a',
+                          background:
+                            aiDetectingForSourceId === img.id
+                              ? '#e2e8f0'
+                              : '#0f172a',
+                          color:
+                            aiDetectingForSourceId === img.id
+                              ? '#64748b'
+                              : '#ffffff',
+                          cursor:
+                            aiDetectingForSourceId !== null
+                              ? 'not-allowed'
+                              : 'pointer',
+                          minWidth: 72,
                         }}
                       >
-                        {aiDetectingForSourceId === img.id ? "…" : "Crop"}
+                        {aiDetectingForSourceId === img.id ? '…' : 'Crop'}
                       </button>
                     </div>
                   ))}
                 </div>
                 {aiError ? (
-                  <p style={{ color: "#b91c1c", fontSize: 13, marginTop: 10, marginBottom: 0 }}>{aiError}</p>
+                  <p
+                    style={{
+                      color: '#b91c1c',
+                      fontSize: 13,
+                      marginTop: 10,
+                      marginBottom: 0,
+                    }}
+                  >
+                    {aiError}
+                  </p>
                 ) : null}
               </div>
             ) : null}
 
-            <div style={{ overflow: "auto", border: "1px solid #cbd5e1", borderRadius: 12, padding: 12 }}>
+            <div
+              style={{
+                overflow: 'auto',
+                border: '1px solid #cbd5e1',
+                borderRadius: 12,
+                padding: 12,
+              }}
+            >
               {activeSourceImage ? (
                 <canvas
                   ref={sourceCanvasRef}
@@ -1298,18 +1588,22 @@ export default function ComposerClient() {
                   onMouseMove={onSourceMouseMove}
                   onMouseUp={onSourceMouseUp}
                   onMouseLeave={onSourceMouseUp}
-                  style={{ borderRadius: 10, display: "block", cursor: "crosshair" }}
+                  style={{
+                    borderRadius: 10,
+                    display: 'block',
+                    cursor: 'crosshair',
+                  }}
                 />
               ) : (
                 <div
                   style={{
                     minHeight: 420,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border: "1px dashed #94a3b8",
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    border: '1px dashed #94a3b8',
                     borderRadius: 10,
-                    color: "#64748b"
+                    color: '#64748b',
                   }}
                 >
                   Upload one or more package images to begin.
@@ -1318,8 +1612,9 @@ export default function ComposerClient() {
             </div>
 
             {activeSourceImage ? (
-              <p style={{ color: "#475569", marginBottom: 0 }}>
-                Source: {activeSourceImage.naturalWidth}x{activeSourceImage.naturalHeight} | Crop:{" "}
+              <p style={{ color: '#475569', marginBottom: 0 }}>
+                Source: {activeSourceImage.naturalWidth}x
+                {activeSourceImage.naturalHeight} | Crop:{' '}
                 {Math.round(crop.width)}x{Math.round(crop.height)}
               </p>
             ) : null}
@@ -1327,28 +1622,31 @@ export default function ComposerClient() {
         </div>
 
         <div style={{ marginTop: 24 }}>
-          <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: "1.125rem" }}>Final listing image</h3>
-          <p style={{ color: "#475569", marginTop: 0, marginBottom: 12 }}>
-            Click and drag items to arrange them. Use HSL preview + <strong>Apply</strong> on the right (or hex in
-            Controls) for the listing background.
+          <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: '1.125rem' }}>
+            Final listing image
+          </h3>
+          <p style={{ color: '#475569', marginTop: 0, marginBottom: 12 }}>
+            Click and drag items to arrange them. Use HSL preview +{' '}
+            <strong>Apply</strong> on the right (or hex in Controls) for the
+            listing background.
           </p>
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) minmax(240px, 300px)",
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0, 1fr) minmax(240px, 300px)',
               gap: 20,
-              alignItems: "start"
+              alignItems: 'start',
             }}
           >
             <div
               style={{
-                overflow: "auto",
+                overflow: 'auto',
                 minWidth: 0,
                 background: appliedListingHex,
                 borderRadius: 12,
                 padding: 10,
-                border: "1px solid #e2e8f0",
-                boxSizing: "border-box"
+                border: '1px solid #e2e8f0',
+                boxSizing: 'border-box',
               }}
             >
               <canvas
@@ -1358,77 +1656,99 @@ export default function ComposerClient() {
                 onMouseUp={onFinalMouseUp}
                 onMouseLeave={onFinalMouseUp}
                 style={{
-                  maxWidth: "100%",
+                  maxWidth: '100%',
                   background: appliedListingHex,
                   borderRadius: 10,
-                  display: "block"
+                  display: 'block',
                 }}
               />
             </div>
             <aside
               style={{
-                border: "1px solid #e2e8f0",
+                border: '1px solid #e2e8f0',
                 borderRadius: 12,
                 padding: 12,
-                background: "#f8fafc",
-                position: "sticky",
-                top: 16
+                background: '#f8fafc',
+                position: 'sticky',
+                top: 16,
               }}
-              aria-label="Listing background color"
+              aria-label='Listing background color'
             >
               <div
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
                   gap: 8,
                   marginBottom: 4,
-                  flexWrap: "wrap"
+                  flexWrap: 'wrap',
                 }}
               >
-                <div style={{ fontWeight: 600, fontSize: 14 }}>Listing background color</div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  Listing background color
+                </div>
                 <button
-                  type="button"
+                  type='button'
                   onClick={applyListingBackground}
                   style={{
-                    padding: "6px 12px",
+                    padding: '6px 12px',
                     fontSize: 13,
                     fontWeight: 600,
                     borderRadius: 8,
-                    border: "1px solid #cbd5e1",
-                    background: listingBgNeedsApply ? "#0f172a" : "#e2e8f0",
-                    color: listingBgNeedsApply ? "#ffffff" : "#64748b",
-                    cursor: "pointer"
+                    border: '1px solid #cbd5e1',
+                    background: listingBgNeedsApply ? '#0f172a' : '#e2e8f0',
+                    color: listingBgNeedsApply ? '#ffffff' : '#64748b',
+                    cursor: 'pointer',
                   }}
-                  title="Use the HSL preview color on the listing canvas, frame, and all crop thumbnails"
+                  title='Use the HSL preview color on the listing canvas, frame, and all crop thumbnails'
                 >
                   Apply
                 </button>
               </div>
-              <p style={{ color: "#64748b", fontSize: 12, marginTop: 0, marginBottom: 12 }}>
-                Adjust HSL for a <strong>preview</strong>, then click <strong>Apply</strong> to use it on the final
-                canvas, the frame around it, and the full background behind every crop thumbnail. Hex / color in
-                Controls applies immediately.
+              <p
+                style={{
+                  color: '#64748b',
+                  fontSize: 12,
+                  marginTop: 0,
+                  marginBottom: 12,
+                }}
+              >
+                Adjust HSL for a <strong>preview</strong>, then click{' '}
+                <strong>Apply</strong> to use it on the final canvas, the frame
+                around it, and the full background behind every crop thumbnail.
+                Hex / color in Controls applies immediately.
               </p>
               <div
                 style={{
                   height: 14,
                   borderRadius: 7,
                   marginBottom: 2,
-                  border: "1px solid #cbd5e1",
+                  border: '1px solid #cbd5e1',
                   background:
-                    "linear-gradient(90deg, #f00 0%, #ff0 16.66%, #0f0 33.33%, #0ff 50%, #00f 66.66%, #f0f 83.33%, #f00 100%)"
+                    'linear-gradient(90deg, #f00 0%, #ff0 16.66%, #0f0 33.33%, #0ff 50%, #00f 66.66%, #f0f 83.33%, #f00 100%)',
                 }}
               />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <label htmlFor="bg-hue" style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 10,
+                }}
+              >
+                <label
+                  htmlFor='bg-hue'
+                  style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}
+                >
                   Hue
                 </label>
-                <span style={{ fontSize: 12, color: "#64748b" }}>{bgHsl.h}°</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>
+                  {bgHsl.h}°
+                </span>
               </div>
               <input
-                id="bg-hue"
-                type="range"
+                id='bg-hue'
+                type='range'
                 min={0}
                 max={360}
                 value={bgHsl.h}
@@ -1439,26 +1759,43 @@ export default function ComposerClient() {
                   bgHslRef.current = next;
                   setBgHsl(next);
                 }}
-                style={{ width: "100%", marginBottom: 14, cursor: "pointer", height: 6 }}
+                style={{
+                  width: '100%',
+                  marginBottom: 14,
+                  cursor: 'pointer',
+                  height: 6,
+                }}
               />
               <div
                 style={{
                   height: 14,
                   borderRadius: 7,
                   marginBottom: 2,
-                  border: "1px solid #cbd5e1",
-                  background: `linear-gradient(90deg, hsl(${bgHsl.h},0%,${bgHsl.l}%), hsl(${bgHsl.h},100%,${bgHsl.l}%))`
+                  border: '1px solid #cbd5e1',
+                  background: `linear-gradient(90deg, hsl(${bgHsl.h},0%,${bgHsl.l}%), hsl(${bgHsl.h},100%,${bgHsl.l}%))`,
                 }}
               />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <label htmlFor="bg-sat" style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 10,
+                }}
+              >
+                <label
+                  htmlFor='bg-sat'
+                  style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}
+                >
                   Saturation
                 </label>
-                <span style={{ fontSize: 12, color: "#64748b" }}>{bgHsl.s}%</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>
+                  {bgHsl.s}%
+                </span>
               </div>
               <input
-                id="bg-sat"
-                type="range"
+                id='bg-sat'
+                type='range'
                 min={0}
                 max={100}
                 value={bgHsl.s}
@@ -1469,26 +1806,43 @@ export default function ComposerClient() {
                   bgHslRef.current = next;
                   setBgHsl(next);
                 }}
-                style={{ width: "100%", marginBottom: 14, cursor: "pointer", height: 6 }}
+                style={{
+                  width: '100%',
+                  marginBottom: 14,
+                  cursor: 'pointer',
+                  height: 6,
+                }}
               />
               <div
                 style={{
                   height: 14,
                   borderRadius: 7,
                   marginBottom: 2,
-                  border: "1px solid #cbd5e1",
-                  background: `linear-gradient(90deg, hsl(${bgHsl.h},${bgHsl.s}%,0%), hsl(${bgHsl.h},${bgHsl.s}%,50%), hsl(${bgHsl.h},${bgHsl.s}%,100%))`
+                  border: '1px solid #cbd5e1',
+                  background: `linear-gradient(90deg, hsl(${bgHsl.h},${bgHsl.s}%,0%), hsl(${bgHsl.h},${bgHsl.s}%,50%), hsl(${bgHsl.h},${bgHsl.s}%,100%))`,
                 }}
               />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <label htmlFor="bg-light" style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 10,
+                }}
+              >
+                <label
+                  htmlFor='bg-light'
+                  style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}
+                >
                   Lightness
                 </label>
-                <span style={{ fontSize: 12, color: "#64748b" }}>{bgHsl.l}%</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>
+                  {bgHsl.l}%
+                </span>
               </div>
               <input
-                id="bg-light"
-                type="range"
+                id='bg-light'
+                type='range'
                 min={0}
                 max={100}
                 value={bgHsl.l}
@@ -1499,57 +1853,95 @@ export default function ComposerClient() {
                   bgHslRef.current = next;
                   setBgHsl(next);
                 }}
-                style={{ width: "100%", marginBottom: 8, cursor: "pointer", height: 6 }}
+                style={{
+                  width: '100%',
+                  marginBottom: 8,
+                  cursor: 'pointer',
+                  height: 6,
+                }}
               />
               <div
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
+                  display: 'flex',
+                  flexDirection: 'column',
                   gap: 10,
                   marginTop: 8,
-                  padding: "8px 10px",
+                  padding: '8px 10px',
                   borderRadius: 10,
-                  border: "1px solid #e2e8f0",
-                  background: "#ffffff"
+                  border: '1px solid #e2e8f0',
+                  background: '#ffffff',
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span
-                    title="HSL preview (click Apply to use)"
+                    title='HSL preview (click Apply to use)'
                     style={{
                       width: 40,
                       height: 40,
                       borderRadius: 10,
-                      border: "1px solid #cbd5e1",
+                      border: '1px solid #cbd5e1',
                       background: previewListingHex,
-                      flexShrink: 0
+                      flexShrink: 0,
                     }}
                   />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>Preview (HSL)</div>
-                    <code style={{ fontSize: 13, color: "#0f172a", wordBreak: "break-all" }}>{previewListingHex}</code>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: '#64748b',
+                        marginBottom: 2,
+                      }}
+                    >
+                      Preview (HSL)
+                    </div>
+                    <code
+                      style={{
+                        fontSize: 13,
+                        color: '#0f172a',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {previewListingHex}
+                    </code>
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span
-                    title="Applied to canvas, frame, and crop thumbnails"
+                    title='Applied to canvas, frame, and crop thumbnails'
                     style={{
                       width: 40,
                       height: 40,
                       borderRadius: 10,
-                      border: "1px solid #cbd5e1",
+                      border: '1px solid #cbd5e1',
                       background: appliedListingHex,
-                      flexShrink: 0
+                      flexShrink: 0,
                     }}
                   />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>Applied</div>
-                    <code style={{ fontSize: 13, color: "#0f172a", wordBreak: "break-all" }}>{appliedListingHex}</code>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: '#64748b',
+                        marginBottom: 2,
+                      }}
+                    >
+                      Applied
+                    </div>
+                    <code
+                      style={{
+                        fontSize: 13,
+                        color: '#0f172a',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {appliedListingHex}
+                    </code>
                   </div>
                 </div>
                 {listingBgNeedsApply ? (
-                  <div style={{ fontSize: 11, color: "#b45309", margin: 0 }}>
-                    Preview differs from applied — click <strong>Apply</strong> to update the canvas and crops.
+                  <div style={{ fontSize: 11, color: '#b45309', margin: 0 }}>
+                    Preview differs from applied — click <strong>Apply</strong>{' '}
+                    to update the canvas and crops.
                   </div>
                 ) : null}
               </div>
@@ -1561,57 +1953,70 @@ export default function ComposerClient() {
           style={{
             ...cardStyle,
             marginTop: 16,
-            minHeight: 280
+            minHeight: 280,
           }}
         >
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>Cropped items pool</div>
-          <p style={{ color: "#64748b", fontSize: 14, marginTop: 0, marginBottom: 16 }}>
-            Items from manual &quot;Add crop&quot; or AI &quot;Crop&quot; appear here. Click a tile to select it on the
-            canvas above.
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>
+            Cropped items pool
+          </div>
+          <p
+            style={{
+              color: '#64748b',
+              fontSize: 14,
+              marginTop: 0,
+              marginBottom: 16,
+            }}
+          >
+            Items from manual &quot;Add crop&quot; or AI &quot;Crop&quot; appear
+            here. Click a tile to select it on the canvas above.
           </p>
           {items.length === 0 ? (
-            <div style={{ color: "#64748b" }}>No cropped items yet. Use Add crop or Crop on a source image.</div>
+            <div style={{ color: '#64748b' }}>
+              No cropped items yet. Use Add crop or Crop on a source image.
+            </div>
           ) : (
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
                 gap: 12,
-                alignItems: "start"
+                alignItems: 'start',
               }}
             >
               {items
                 .slice()
                 .sort((a, b) => a.zIndex - b.zIndex)
                 .map((item) => {
-                  const src = sourceImages.find((s) => s.id === item.sourceImageId);
+                  const src = sourceImages.find(
+                    (s) => s.id === item.sourceImageId,
+                  );
                   if (!src) return null;
                   const tileBorder =
                     item.id === selectedItemId
-                      ? "#3b82f6"
+                      ? '#3b82f6'
                       : relativeLuminance(appliedListingHex) > 0.45
-                        ? "rgba(15, 23, 42, 0.12)"
-                        : "rgba(248, 250, 252, 0.28)";
+                        ? 'rgba(15, 23, 42, 0.12)'
+                        : 'rgba(248, 250, 252, 0.28)';
                   const tileBg =
                     item.id === selectedItemId
                       ? `color-mix(in srgb, #3b82f6 14%, ${appliedListingHex})`
                       : appliedListingHex;
                   return (
                     <button
-                      type="button"
+                      type='button'
                       key={item.id}
                       onClick={() => setSelectedItemId(item.id)}
                       style={{
-                        textAlign: "left",
+                        textAlign: 'left',
                         padding: 10,
                         borderRadius: 12,
                         border: `2px solid ${tileBorder}`,
                         background: tileBg,
-                        cursor: "pointer",
-                        display: "flex",
-                        flexDirection: "column",
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
                         gap: 8,
-                        alignItems: "stretch"
+                        alignItems: 'stretch',
                       }}
                     >
                       <ItemThumb
@@ -1620,10 +2025,19 @@ export default function ComposerClient() {
                         source={src}
                         listingBackground={appliedListingHex}
                       />
-                      <span style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3, color: poolTileText.name }}>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          lineHeight: 1.3,
+                          color: poolTileText.name,
+                        }}
+                      >
                         {item.name}
                       </span>
-                      <span style={{ fontSize: 12, color: poolTileText.meta }}>{Math.round(item.width)} px wide</span>
+                      <span style={{ fontSize: 12, color: poolTileText.meta }}>
+                        {Math.round(item.width)} px wide
+                      </span>
                     </button>
                   );
                 })}
