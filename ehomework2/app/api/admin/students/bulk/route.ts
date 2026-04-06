@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/firebase-admin";
+import { studentDocId } from "@/lib/student-utils";
 
 const COLLECTION = "students";
 
@@ -42,18 +43,15 @@ export async function POST(request: NextRequest) {
 
     const db = getDb();
     const batch = db.batch();
-    const results: Array<{ firstName: string; lastName: string; username: string; status: string }> = [];
-
-    // Check for existing students by username to avoid duplicates
-    const existingSnap = await db.collection(COLLECTION).get();
-    const existingUsernames = new Set(
-      existingSnap.docs
-        .map((d) => d.data().username?.toLowerCase())
-        .filter(Boolean)
-    );
+    const results: Array<{ firstName: string; lastName: string; username: string; docId: string; status: string }> = [];
 
     let created = 0;
+    let updated = 0;
     let skipped = 0;
+
+    // Load existing doc IDs to distinguish create vs update
+    const existingSnap = await db.collection(COLLECTION).get();
+    const existingIds = new Set(existingSnap.docs.map((d) => d.id));
 
     for (const s of students) {
       if (!s.firstName || !s.lastName) {
@@ -61,42 +59,44 @@ export async function POST(request: NextRequest) {
           firstName: s.firstName || "?",
           lastName: s.lastName || "?",
           username: s.username || "?",
+          docId: "",
           status: "skipped — missing name",
         });
         skipped++;
         continue;
       }
 
-      if (s.username && existingUsernames.has(s.username.toLowerCase())) {
-        results.push({
-          firstName: s.firstName,
-          lastName: s.lastName,
-          username: s.username,
-          status: "skipped — username already exists",
-        });
-        skipped++;
-        continue;
-      }
+      const docId = studentDocId(s.firstName, s.lastName);
+      const trimmedUsername = (s.username || "").trim();
+      const autoEmail = trimmedUsername ? `${trimmedUsername}@students.wpunj.edu` : "";
+      const finalEmail = (s.email || "").trim() || autoEmail;
+      const isUpdate = existingIds.has(docId);
 
-      const ref = db.collection(COLLECTION).doc();
-      batch.set(ref, {
-        firstName: s.firstName.trim(),
-        lastName: s.lastName.trim(),
-        username: (s.username || "").trim(),
-        email: (s.email || "").trim(),
-        bio: (s.bio || "").trim(),
-        documents: [],
-        instructorComments: "",
-      });
+      const ref = db.collection(COLLECTION).doc(docId);
+      // merge: true → overwrites profile fields, preserves documents & instructorComments
+      batch.set(
+        ref,
+        {
+          firstName: s.firstName.trim(),
+          lastName: s.lastName.trim(),
+          username: trimmedUsername,
+          email: finalEmail,
+          bio: (s.bio || "").trim(),
+          // Only set these on first create (merge won't overwrite existing)
+          ...(isUpdate ? {} : { documents: [], instructorComments: "" }),
+        },
+        { merge: true }
+      );
 
-      if (s.username) existingUsernames.add(s.username.toLowerCase());
       results.push({
         firstName: s.firstName,
         lastName: s.lastName,
         username: s.username,
-        status: "created",
+        docId,
+        status: isUpdate ? "updated" : "created",
       });
-      created++;
+      if (isUpdate) updated++;
+      else created++;
     }
 
     await batch.commit();
@@ -104,6 +104,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       created,
+      updated,
       skipped,
       total: students.length,
       results,

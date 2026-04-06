@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/firebase-admin";
+import { studentDocId } from "@/lib/student-utils";
 
 const COLLECTION = "students";
 
@@ -35,19 +36,32 @@ export async function POST(request: NextRequest) {
 
     const db = getDb();
 
-    const doc = {
-      firstName,
-      lastName,
-      username: username || "",
-      email: email || "",
-      bio: bio || "",
-      documents: [],
-      instructorComments: "",
-    };
+    const trimmedUsername = (username || "").trim();
+    // Auto-generate email from username: username@students.wpunj.edu
+    const autoEmail = trimmedUsername ? `${trimmedUsername}@students.wpunj.edu` : "";
 
-    const ref = await db.collection(COLLECTION).add(doc);
+    const docId = studentDocId(firstName, lastName);
+    const ref = db.collection(COLLECTION).doc(docId);
 
-    return NextResponse.json({ id: ref.id, ...doc }, { status: 201 });
+    // merge: true so re-saving preserves existing documents & instructorComments
+    await ref.set(
+      {
+        firstName,
+        lastName,
+        username: trimmedUsername,
+        email: (email || "").trim() || autoEmail,
+        bio: bio || "",
+      },
+      { merge: true }
+    );
+
+    // Ensure documents and instructorComments fields exist on first create
+    const snap = await ref.get();
+    const data = snap.data()!;
+    if (!data.documents) await ref.update({ documents: [] });
+    if (!data.instructorComments) await ref.update({ instructorComments: "" });
+
+    return NextResponse.json({ id: docId, ...data }, { status: 201 });
   } catch (error) {
     console.error("Students POST error:", error);
     return NextResponse.json({ error: "Failed to create student" }, { status: 500 });

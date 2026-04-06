@@ -15,6 +15,7 @@ export default function BulkImportForm() {
   const [error, setError] = useState("");
   const [results, setResults] = useState<{
     created: number;
+    updated: number;
     skipped: number;
     total: number;
     results: ImportResult[];
@@ -107,6 +108,11 @@ export default function BulkImportForm() {
         <div style={{ marginTop: "1rem" }}>
           <p style={{ fontSize: "0.85rem", margin: "0 0 0.75rem" }}>
             <span style={{ color: "var(--success)" }}>{results.created} created</span>
+            {results.updated > 0 && (
+              <span style={{ color: "var(--accent)", marginLeft: "1rem" }}>
+                {results.updated} updated
+              </span>
+            )}
             {results.skipped > 0 && (
               <span style={{ color: "var(--warning)", marginLeft: "1rem" }}>
                 {results.skipped} skipped
