@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# env
+.env
+.env*.local
+
+# firebase — materialized copy for deploy (source lives in packages/gradeflow-shared)
+functions/packages/
+
+# misc
+.DS_Store
+*.log

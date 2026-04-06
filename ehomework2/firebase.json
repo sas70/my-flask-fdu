@@ -1,0 +1,16 @@
+{
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "gradeflow",
+      "ignore": ["node_modules", ".git"],
+      "predeploy": [
+        "npm run predeploy-functions"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

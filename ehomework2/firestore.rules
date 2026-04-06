@@ -1,0 +1,36 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Students — authenticated users can read/write
+    match /students/{studentId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Instructor preferences — authenticated users can read/write
+    match /instructorPreferences/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Assignments — authenticated users can read/write
+    match /assignments/{assignmentId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Homework submissions — authenticated users can read/write
+    match /homeworkSubmissions/{submissionId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Discussions — authenticated users can read/write
+    match /discussions/{discussionId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // System prompts — authenticated users can read/write
+    match /systemPrompts/{promptId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

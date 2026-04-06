@@ -1,0 +1,32 @@
+{
+  "name": "ehomework2",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "predeploy-functions": "node scripts/predeploy-functions.js",
+    "serve": "firebase emulators:start --only functions,firestore",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:firestore": "firebase deploy --only firestore"
+  },
+  "dependencies": {
+    "@ehomework/gradeflow-shared": "file:./packages/gradeflow-shared",
+    "firebase-admin": "^12.7.0",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "^15.1.0",
+    "typescript": "^5.7.0"
+  }
+}
