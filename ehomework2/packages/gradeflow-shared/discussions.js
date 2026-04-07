@@ -63,7 +63,8 @@ Return ONLY valid JSON (no markdown fences) with this exact structure:
 Include categories for: Content Quality & Depth, Critical Thinking, Peer Engagement & Replies, Use of Evidence/Examples, and Writing Clarity.`;
 }
 
-async function buildDiscussionAnalysisPrompt(discussion, gradingNotes) {
+async function buildDiscussionAnalysisPrompt(discussion, gradingNotes, responsesBody) {
+  const body = (responsesBody || "").substring(0, 80000);
   const custom = await getPrompt("discussionAnalysis");
   if (custom) {
     return custom
@@ -71,7 +72,7 @@ async function buildDiscussionAnalysisPrompt(discussion, gradingNotes) {
       .replace(/\{\{title\}\}/g, discussion.title || `Week ${discussion.week} Discussion`)
       .replace(/\{\{promptText\}\}/g, discussion.promptText || "")
       .replace(/\{\{gradingNotes\}\}/g, gradingNotes || "No specific preferences noted.")
-      .replace(/\{\{responsesText\}\}/g, (discussion.responsesText || "").substring(0, 80000));
+      .replace(/\{\{responsesText\}\}/g, body);
   }
   return `You are an expert teaching assistant analyzing student discussion responses for a college course.
 
@@ -86,7 +87,7 @@ ${discussion.promptText || ""}
 ${gradingNotes || "No specific preferences noted."}
 
 ## Student Discussion Responses (all students)
-${(discussion.responsesText || "").substring(0, 80000)}
+${body}
 
 ## Task
 Analyze ALL the student discussion responses above. Do NOT grade each student individually.
@@ -118,6 +119,20 @@ Be thorough, specific, and reference actual student names and quotes. The instru
 
 function db() {
   return getFirestore();
+}
+
+/** Load full responses text from Firestore (legacy) or by fetching responsesUrl (ByteScale). */
+async function loadDiscussionResponsesText(discussion) {
+  if (discussion.responsesUrl) {
+    const res = await fetch(discussion.responsesUrl);
+    if (!res.ok) {
+      throw new Error(
+        `Failed to fetch discussion responses (${res.status}): ${discussion.responsesUrl}`
+      );
+    }
+    return await res.text();
+  }
+  return discussion.responsesText || "";
 }
 
 /* ------------------------------------------------------------------ */
@@ -162,6 +177,11 @@ async function generateDiscussionRubric(discussion, instructorContext) {
 /* ------------------------------------------------------------------ */
 
 async function analyzeDiscussionResponses(discussion) {
+  const responsesBody = await loadDiscussionResponsesText(discussion);
+  if (!responsesBody.trim()) {
+    throw new Error("No discussion responses text available (empty URL body or missing responsesText)");
+  }
+
   const instrSnap = await db().collection("instructorPreferences").limit(1).get();
   let gradingNotes = "";
   if (!instrSnap.empty) {
@@ -182,7 +202,7 @@ async function analyzeDiscussionResponses(discussion) {
       messages: [
         {
           role: "user",
-          content: await buildDiscussionAnalysisPrompt(discussion, gradingNotes),
+          content: await buildDiscussionAnalysisPrompt(discussion, gradingNotes, responsesBody),
         },
       ],
     }),
@@ -250,11 +270,12 @@ async function handleDiscussionCreated(snap, docId) {
 
     console.log(`✅ Discussion rubric generated for Week ${discussion.week}`);
 
-    // If responses were already uploaded before rubric finished, analyze now
-    if (discussion.responsesText) {
+    // If responses were already uploaded before rubric finished, analyze now (re-fetch — may have arrived during rubric gen)
+    const latest = await snap.ref.get();
+    const latestData = latest.data();
+    if (latestData.responsesUrl || latestData.responsesText) {
       console.log(`🎯 Responses already present — starting analysis`);
-      const updatedDoc = await snap.ref.get();
-      await runDiscussionAnalysis(docId, updatedDoc.data(), snap.ref);
+      await runDiscussionAnalysis(docId, latestData, snap.ref);
     }
   } catch (error) {
     console.error(`❌ Discussion rubric failed for ${docId}:`, error);
@@ -266,12 +287,11 @@ async function handleDiscussionCreated(snap, docId) {
 }
 
 async function handleDiscussionUpdated(before, after, docId, ref) {
+  const hadResponses = !!(before.responsesUrl || before.responsesText);
+  const hasResponses = !!(after.responsesUrl || after.responsesText);
+
   // Case 1: Responses just uploaded and rubric is ready → analyze
-  if (
-    !before.responsesText &&
-    after.responsesText &&
-    after.status === "rubric_ready"
-  ) {
+  if (!hadResponses && hasResponses && after.status === "rubric_ready") {
     console.log(`📄 Responses uploaded for discussion ${docId} — starting analysis`);
     await runDiscussionAnalysis(docId, after, ref);
     return;
@@ -310,8 +330,7 @@ async function handleDiscussionUpdated(before, after, docId, ref) {
       error: FieldValue.delete(),
     });
       console.log("6- Running discussion analysis");
-      // If responses exist, kick off analysis
-      if (after.responsesText) {
+      if (after.responsesUrl || after.responsesText) {
         const updatedDoc = await ref.get();
         await runDiscussionAnalysis(docId, updatedDoc.data(), ref);
       }
@@ -341,7 +360,7 @@ async function runDiscussionAnalysis(docId, discussion, ref) {
     return;
   }
 
-  if (!discussion.responsesText) {
+  if (!discussion.responsesUrl && !discussion.responsesText) {
     console.log(`⏳ No responses for discussion ${docId} — cannot analyze yet`);
     return;
   }

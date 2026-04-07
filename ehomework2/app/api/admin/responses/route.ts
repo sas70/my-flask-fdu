@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "@/lib/firebase-admin";
+import { uploadTextToBytescale } from "@/lib/bytescale-upload";
 import type { Firestore, QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 /**
@@ -62,17 +63,21 @@ export async function POST(request: NextRequest) {
     const discussion = discussionDoc.data();
 
     const responsesText = await file.text();
+    const fileName = `discussion-responses/week${discussion.week}_${discussionDoc.id}.txt`;
+    const responsesUrl = await uploadTextToBytescale(responsesText, fileName);
 
     await discussionDoc.ref.update({
-      responsesText: responsesText.substring(0, 100000),
+      responsesUrl,
       responsesFileName: file.name,
       responsesUploadedAt: FieldValue.serverTimestamp(),
+      responsesText: FieldValue.delete(),
     });
 
-    console.info("[admin/responses POST] saved responses", {
+    console.info("[admin/responses POST] uploaded responses to ByteScale", {
       discussionId: discussionDoc.id,
       week: discussion.week,
       chars: responsesText.length,
+      responsesUrl,
     });
 
     return NextResponse.json({
@@ -81,6 +86,7 @@ export async function POST(request: NextRequest) {
       week: discussion.week,
       title: discussion.title,
       chars: responsesText.length,
+      responsesUrl,
     });
   } catch (error) {
     console.error("[admin/responses POST] error:", error);

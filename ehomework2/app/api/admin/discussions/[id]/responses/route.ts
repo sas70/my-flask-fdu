@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "@/lib/firebase-admin";
+import { uploadTextToBytescale } from "@/lib/bytescale-upload";
 
 export async function POST(
   request: NextRequest,
@@ -26,19 +27,26 @@ export async function POST(
       );
     }
 
+    const data = doc.data()!;
+    const week = typeof data.week === "number" ? data.week : Number(data.week);
     const responsesText = await file.text();
+    const fileName = `discussion-responses/week${week}_${id}.txt`;
+    const responsesUrl = await uploadTextToBytescale(responsesText, fileName);
 
-    // Store responses text in Firestore — the onUpdate trigger will pick it up
-    // and run analysis if the rubric is ready
     await ref.update({
-      responsesText: responsesText.substring(0, 100000),
+      responsesUrl,
       responsesFileName: file.name,
       responsesUploadedAt: FieldValue.serverTimestamp(),
+      responsesText: FieldValue.delete(),
     });
 
-    console.info("[admin/discussions/:id/responses POST] saved", { id, chars: responsesText.length });
+    console.info("[admin/discussions/:id/responses POST] uploaded to ByteScale", {
+      id,
+      chars: responsesText.length,
+      responsesUrl,
+    });
 
-    return NextResponse.json({ ok: true, chars: responsesText.length });
+    return NextResponse.json({ ok: true, chars: responsesText.length, responsesUrl });
   } catch (error) {
     console.error("Responses upload error:", error);
     return NextResponse.json({ error: "Failed to upload responses" }, { status: 500 });

@@ -17,7 +17,7 @@ export default async function DiscussionResponsesPage() {
       title: (d.title || `Week ${d.week} Discussion`) as string,
       status: (d.status || "pending") as string,
       hasRubric: !!d.rubric,
-      hasResponses: !!d.responsesText,
+      hasResponses: !!(d.responsesUrl || d.responsesText),
       hasInsights: !!d.insights,
       responsesFileName: (d.responsesFileName || null) as string | null,
     };

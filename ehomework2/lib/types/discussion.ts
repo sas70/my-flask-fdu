@@ -87,7 +87,10 @@ export interface DiscussionDocument {
   rubric?: DiscussionRubric;
   rubricUrl?: string;
   rubricGeneratedAt?: unknown;
+  /** Legacy: large uploads now use responsesUrl only */
   responsesText?: string;
+  /** ByteScale URL for full discussion responses text */
+  responsesUrl?: string;
   responsesFileName?: string;
   responsesUploadedAt?: unknown;
   insights?: DiscussionInsights;

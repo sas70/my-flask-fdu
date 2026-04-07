@@ -77,13 +77,13 @@ export default async function ResponsesDetailPage({
           disc.status === "analyzed" ? "graded"
             : disc.status === "analysis_failed" ? "grading_failed"
             : disc.status === "analyzing" ? "grading"
-            : disc.responsesText ? "transcribed"
+            : disc.responsesUrl || disc.responsesText ? "transcribed"
             : "pending"
         )}>
           {disc.status === "analyzed" ? "analyzed"
             : disc.status === "analysis_failed" ? "analysis failed"
             : disc.status === "analyzing" ? "analyzing"
-            : disc.responsesText ? "responses uploaded"
+            : disc.responsesUrl || disc.responsesText ? "responses uploaded"
             : "awaiting responses"}
         </span>
       </div>
@@ -116,29 +116,43 @@ export default async function ResponsesDetailPage({
         <UploadResponsesForm discussionId={id} />
       )}
 
-      {/* Responses file info */}
-      {disc.responsesText && (
-        <details style={{ ...s.card, marginBottom: "1.5rem" }}>
-          <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: "0.9rem" }}>
-            Student Responses ({disc.responsesText.length.toLocaleString()} chars)
+      {/* Responses: full text only when stored inline (legacy); otherwise link to ByteScale */}
+      {(disc.responsesUrl || disc.responsesText) && (
+        <div style={{ ...s.card, marginBottom: "1.5rem" }}>
+          <h2 style={{ fontSize: "0.9rem", fontWeight: 600, marginTop: 0, marginBottom: "0.5rem" }}>
+            Student Responses
             {disc.responsesFileName && (
               <span style={{ color: "var(--muted)", fontWeight: 400 }}>
                 {" "}— {disc.responsesFileName}
               </span>
             )}
-          </summary>
-          <pre style={{
-            marginTop: "1rem",
-            whiteSpace: "pre-wrap",
-            fontSize: "0.8rem",
-            lineHeight: 1.5,
-            color: "var(--muted)",
-            maxHeight: "30rem",
-            overflow: "auto",
-          }}>
-            {disc.responsesText}
-          </pre>
-        </details>
+          </h2>
+          {disc.responsesUrl && (
+            <p style={{ margin: 0, fontSize: "0.9rem" }}>
+              <a href={disc.responsesUrl} target="_blank" rel="noopener noreferrer">
+                Open full responses (hosted file)
+              </a>
+            </p>
+          )}
+          {disc.responsesText && (
+            <details style={{ marginTop: "0.75rem" }}>
+              <summary style={{ cursor: "pointer", fontSize: "0.85rem", color: "var(--muted)" }}>
+                Inline preview ({disc.responsesText.length.toLocaleString()} chars)
+              </summary>
+              <pre style={{
+                marginTop: "0.75rem",
+                whiteSpace: "pre-wrap",
+                fontSize: "0.8rem",
+                lineHeight: 1.5,
+                color: "var(--muted)",
+                maxHeight: "30rem",
+                overflow: "auto",
+              }}>
+                {disc.responsesText}
+              </pre>
+            </details>
+          )}
+        </div>
       )}
 
       {/* ─── INSIGHTS ─── */}

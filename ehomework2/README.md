@@ -2,6 +2,28 @@
 
 Event-driven grading pipeline for Python homework video walkthroughs. Firestore triggers run in **Firebase Cloud Functions**; shared logic lives in **`packages/gradeflow-shared`**. The **Next.js** app at the repo root is the web UI and optional API routes.
 
+## CLoud functions
+Here’s how to redeploy Cloud Functions in this repo:
+
+One command (recommended)
+# From the project root (ehomework2):
+
+firebase use e-homework-project   # if you’re not already on this project
+npm run deploy:functions
+firebase deploy --only functions runs the predeploy hook in firebase.json, which runs npm run predeploy-functions and copies packages/gradeflow-shared into functions/ before upload.
+
+# Equivalent manual steps
+npm run predeploy-functions
+cd functions && npm install   # only if deps changed; predeploy often runs install already
+cd ..
+firebase deploy --only functions
+
+# After changing secrets
+If you rotated API keys in Secret Manager, redeploy so functions pick them up:
+
+npm run deploy:functions
+
+
 ## Repository layout
 
 | Path | Role |
@@ -69,7 +91,7 @@ Prompts, **student responses**, and **Claude-generated insights** all live on th
 | --- | --- | --- |
 | Prompt | `week`, `title`, `promptText`, `promptFileUrls`, `status` | Next.js admin API (`POST/PATCH` discussions), Cloud Functions on create/retry |
 | Rubric | `rubric`, `rubricUrl`, `rubricGeneratedAt`, `error` | `onDiscussionCreated`, `onDiscussionUpdated` (`retry_rubric`) in [`packages/gradeflow-shared/discussions.js`](packages/gradeflow-shared/discussions.js) |
-| Responses | `responsesText`, `responsesFileName`, `responsesUploadedAt` | [`app/api/admin/responses/route.ts`](app/api/admin/responses/route.ts), [`app/api/admin/discussions/[id]/responses/route.ts`](app/api/admin/discussions/[id]/responses/route.ts) |
+| Responses | `responsesUrl` (ByteScale), `responsesFileName`, `responsesUploadedAt`; legacy `responsesText` | Upload APIs upload the file to ByteScale and store the URL only (see [`lib/bytescale-upload.ts`](lib/bytescale-upload.ts)). Cloud Functions fetch the URL at analysis time. |
 | Insights | `insights`, `insightsUrl`, `analyzedAt`, `error` | `runDiscussionAnalysis` in [`discussions.js`](packages/gradeflow-shared/discussions.js) — full JSON in Firestore **and** a copy uploaded to ByteScale (`insightsUrl`) |
 
 **Discussion status flow (high level):**
@@ -79,14 +101,16 @@ pending → rubric_generating → rubric_ready
                 ↘ rubric_failed
                      ↑ retry_rubric
 
-rubric_ready + responsesText → analyzing → analyzed
+rubric_ready + (`responsesUrl` or `responsesText`) → analyzing → analyzed
                                   ↘ analysis_failed
                                        ↑ retry_analysis
 ```
 
-Analysis runs when `responsesText` is set and the rubric is ready (either right after rubric generation if responses were already uploaded, or on the next update when responses arrive).
+Analysis runs when responses are present (`responsesUrl` or legacy `responsesText`) and the rubric is ready (either right after rubric generation if responses were already uploaded, or on the next update when responses arrive).
 
-**Document size:** Firestore documents are limited to roughly **1 MiB**. Very large `responsesText` plus large `insights` JSON can approach that limit. If you see write errors, rely on ByteScale URLs (`rubricUrl`, `insightsUrl`) for full artifacts and keep shorter summaries in Firestore, or split content across runs. Types for this shape live in [`lib/types/discussion.ts`](lib/types/discussion.ts).
+**Next.js admin uploads** need `SECRET_BYTESCALE_API_KEY` (and optional `BYTESCALE_ACCOUNT_ID`) in `.env.local` so response files can be uploaded to ByteScale from API routes.
+
+**Document size:** Firestore documents are limited to roughly **1 MiB**. Discussion responses are stored on ByteScale (`responsesUrl`), not inline. Large `insights` still lives in Firestore alongside `insightsUrl`; if writes fail, trim inline `insights` or rely on `insightsUrl` only. Types live in [`lib/types/discussion.ts`](lib/types/discussion.ts).
 
 ### Submission status flow
 
@@ -187,7 +211,7 @@ npm run deploy:firestore
 
 | Context | Where keys live |
 | --- | --- |
-| Next.js | `.env.local` (server and `NEXT_PUBLIC_*` for browser) |
+| Next.js | `.env.local` (server and `NEXT_PUBLIC_*` for browser). Include `SECRET_BYTESCALE_API_KEY` (and optional `BYTESCALE_ACCOUNT_ID`) if you use admin discussion response uploads. |
 | Cloud Functions | Firebase secrets / emulator env — `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `SECRET_BYTESCALE_API_KEY`, `BYTESCALE_ACCOUNT_ID` |
 
 Keep `.env.local` gitignored.

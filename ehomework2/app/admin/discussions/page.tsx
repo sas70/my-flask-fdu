@@ -27,7 +27,7 @@ export default async function DiscussionsPage() {
       title: d.title || `Week ${d.week} Discussion`,
       status: d.status || "pending",
       hasRubric: !!d.rubric,
-      hasResponses: !!d.responsesText,
+      hasResponses: !!(d.responsesUrl || d.responsesText),
       hasInsights: !!d.insights,
       createdAt: doc.createTime?.toDate().toISOString() || null,
     };
