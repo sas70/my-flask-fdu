@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sphere volume</title>
+  <style>
+    :root {
+      --bg1: #1a1a2e;
+      --bg2: #16213e;
+      --accent: #e94560;
+      --accent-soft: rgba(233, 69, 96, 0.15);
+      --success: #00d9a5;
+      --success-bg: rgba(0, 217, 165, 0.12);
+      --text: #eaeaea;
+      --muted: #a0a0b8;
+      --err: #ff6b6b;
+      --err-bg: rgba(255, 107, 107, 0.12);
+      --card: rgba(255, 255, 255, 0.06);
+      --border: rgba(255, 255, 255, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: linear-gradient(135deg, var(--bg1) 0%, var(--bg2) 50%, #0f3460 100%);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 28rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 1.25rem;
+      padding: 2rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 1.5rem 3rem rgba(0, 0, 0, 0.35);
+    }
+
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.65rem;
+      font-weight: 700;
+      background: linear-gradient(90deg, #fff, var(--accent));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .subtitle {
+      margin: 0 0 1.75rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    input[type="number"] {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      font-size: 1.1rem;
+      border: 1px solid var(--border);
+      border-radius: 0.65rem;
+      background: rgba(0, 0, 0, 0.25);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input[type="number"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    input[type="number"]::placeholder {
+      color: var(--muted);
+      opacity: 0.7;
+    }
+
+    button {
+      margin-top: 1.25rem;
+      width: 100%;
+      padding: 0.85rem 1rem;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 0.65rem;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), #c73e54);
+      color: #fff;
+      transition: transform 0.15s, box-shadow 0.2s;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0.5rem 1.25rem rgba(233, 69, 96, 0.4);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    .result {
+      margin-top: 1.75rem;
+      padding: 1.25rem;
+      border-radius: 0.85rem;
+      background: var(--success-bg);
+      border: 1px solid rgba(0, 217, 165, 0.35);
+    }
+
+    .result-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--success);
+      margin-bottom: 0.35rem;
+    }
+
+    .result-value {
+      font-size: 1.75rem;
+      font-weight: 800;
+      line-height: 1.2;
+      background: linear-gradient(90deg, var(--success), #5efce8);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .result-meta {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .error {
+      margin-top: 1.25rem;
+      padding: 1rem 1.1rem;
+      border-radius: 0.65rem;
+      background: var(--err-bg);
+      border: 1px solid rgba(255, 107, 107, 0.4);
+      color: var(--err);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Sphere volume</h1>
+    <p class="subtitle">Enter the radius to compute V = <span style="color: var(--accent);">⁴⁄₃πr³</span></p>
+
+    <form method="post" action="/">
+      <label for="radius">Radius</label>
+      <input
+        id="radius"
+        name="radius"
+        type="number"
+        inputmode="decimal"
+        min="0"
+        step="any"
+        placeholder="e.g. 5"
+        value="{{ radius_input }}"
+        autofocus
+      />
+      <button type="submit">Calculate volume</button>
+    </form>
+
+    {% if error %}
+    <div class="error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    {% if volume is not none %}
+    <div class="result" role="status">
+      <div class="result-label">Volume</div>
+      <div class="result-value">{{ "%.6f"|format(volume) }}</div>
+      <div class="result-meta">cubic units (r = {{ radius }})</div>
+    </div>
+    {% endif %}
+  </main>
+</body>
+</html>
