@@ -59,6 +59,34 @@ Student uploads video
 | `instructorPreferences` | name, email, dept, bio, notes, documents[{name, url, category}] |
 | `assignments` | week, title, description, files[], rubric{}, rubricUrl |
 | `homeworkSubmissions` | studentId, studentName, week, videos[], urls[], status, grade, … |
+| `discussions` | One document per discussion week: prompt, rubric, uploaded responses, generated insights (see below) |
+
+### `discussions` document schema
+
+Prompts, **student responses**, and **Claude-generated insights** all live on the **same** `discussions/{discussionId}` document (not a separate collection). Use numeric `week` for filtering; the upload API accepts both number and string `week` in Firestore for compatibility.
+
+| Area | Fields | Written by |
+| --- | --- | --- |
+| Prompt | `week`, `title`, `promptText`, `promptFileUrls`, `status` | Next.js admin API (`POST/PATCH` discussions), Cloud Functions on create/retry |
+| Rubric | `rubric`, `rubricUrl`, `rubricGeneratedAt`, `error` | `onDiscussionCreated`, `onDiscussionUpdated` (`retry_rubric`) in [`packages/gradeflow-shared/discussions.js`](packages/gradeflow-shared/discussions.js) |
+| Responses | `responsesText`, `responsesFileName`, `responsesUploadedAt` | [`app/api/admin/responses/route.ts`](app/api/admin/responses/route.ts), [`app/api/admin/discussions/[id]/responses/route.ts`](app/api/admin/discussions/[id]/responses/route.ts) |
+| Insights | `insights`, `insightsUrl`, `analyzedAt`, `error` | `runDiscussionAnalysis` in [`discussions.js`](packages/gradeflow-shared/discussions.js) — full JSON in Firestore **and** a copy uploaded to ByteScale (`insightsUrl`) |
+
+**Discussion status flow (high level):**
+
+```
+pending → rubric_generating → rubric_ready
+                ↘ rubric_failed
+                     ↑ retry_rubric
+
+rubric_ready + responsesText → analyzing → analyzed
+                                  ↘ analysis_failed
+                                       ↑ retry_analysis
+```
+
+Analysis runs when `responsesText` is set and the rubric is ready (either right after rubric generation if responses were already uploaded, or on the next update when responses arrive).
+
+**Document size:** Firestore documents are limited to roughly **1 MiB**. Very large `responsesText` plus large `insights` JSON can approach that limit. If you see write errors, rely on ByteScale URLs (`rubricUrl`, `insightsUrl`) for full artifacts and keep shorter summaries in Firestore, or split content across runs. Types for this shape live in [`lib/types/discussion.ts`](lib/types/discussion.ts).
 
 ### Submission status flow
 
