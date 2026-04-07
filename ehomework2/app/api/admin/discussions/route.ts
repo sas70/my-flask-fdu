@@ -14,7 +14,7 @@ export async function GET() {
 
     return NextResponse.json(discussions);
   } catch (error) {
-    console.error("Discussions GET error:", error);
+    console.error("[admin/discussions GET] error:", error);
     return NextResponse.json({ error: "Failed to fetch discussions" }, { status: 500 });
   }
 }
@@ -28,6 +28,7 @@ export async function POST(request: NextRequest) {
     const promptFiles = formData.getAll("promptFiles") as File[];
 
     if (!week || !title) {
+      console.warn("[admin/discussions POST] validation failed: week and title required");
       return NextResponse.json(
         { error: "week and title are required" },
         { status: 400 }
@@ -53,6 +54,7 @@ export async function POST(request: NextRequest) {
     ].filter(Boolean).join("\n\n");
 
     if (!combinedPrompt.trim()) {
+      console.warn("[admin/discussions POST] validation failed: empty prompt");
       return NextResponse.json(
         { error: "Either prompt text or a prompt file is required" },
         { status: 400 }
@@ -71,9 +73,16 @@ export async function POST(request: NextRequest) {
 
     const ref = await db.collection("discussions").add(doc);
 
+    console.info("[admin/discussions POST] created Firestore doc", {
+      discussionId: ref.id,
+      week: doc.week,
+      status: doc.status,
+      note: "Cloud Function onDiscussionCreated should run for this new document",
+    });
+
     return NextResponse.json({ id: ref.id, ...doc }, { status: 201 });
   } catch (error) {
-    console.error("Discussions POST error:", error);
+    console.error("[admin/discussions POST] error:", error);
     return NextResponse.json({ error: "Failed to create discussion" }, { status: 500 });
   }
 }

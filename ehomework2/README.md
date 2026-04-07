@@ -116,7 +116,18 @@ firebase functions:secrets:set ANTHROPIC_API_KEY
 firebase functions:secrets:set SECRET_BYTESCALE_API_KEY
 ```
 
-Wire secrets to your Functions runtime in the Firebase console or `functions` source if you use `defineSecret()` (not added in this scaffold — add when you move off raw `process.env` in deployed v2 functions).
+**If pasting into the terminal fails** (long keys, special characters, or the prompt eats input), read the value from a **file** or **stdin** instead:
+
+```bash
+# From a one-line text file you create (keep these files out of git)
+firebase functions:secrets:set GOOGLE_API_KEY --data-file ~/Downloads/google_api_key.txt
+firebase functions:secrets:set SECRET_BYTESCALE_API_KEY --data-file ~/Downloads/bytescale_secret.txt
+
+# Or from stdin (paste once, press Ctrl+D on a new line to finish)
+firebase functions:secrets:set SECRET_BYTESCALE_API_KEY --data-file -
+```
+
+[`functions/index.js`](functions/index.js) binds those names with `defineSecret()` and `setGlobalOptions({ secrets: [...] })` so `process.env.ANTHROPIC_API_KEY` (and the others) are set at runtime. After setting or rotating a secret, **redeploy functions**.
 
 For local emulator development, use a `.env` in `functions/` or export variables in your shell (do not commit secrets).
 

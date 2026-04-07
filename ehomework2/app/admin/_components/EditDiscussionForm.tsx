@@ -4,10 +4,20 @@ import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import * as s from "@/lib/admin-styles";
 
-export default function CreateDiscussionForm() {
-  const [week, setWeek] = useState("");
-  const [title, setTitle] = useState("");
-  const [promptText, setPromptText] = useState("");
+export default function EditDiscussionForm({
+  discussionId,
+  initialWeek,
+  initialTitle,
+  initialPromptText,
+}: {
+  discussionId: string;
+  initialWeek: number;
+  initialTitle: string;
+  initialPromptText: string;
+}) {
+  const [week, setWeek] = useState(String(initialWeek));
+  const [title, setTitle] = useState(initialTitle);
+  const [promptText, setPromptText] = useState(initialPromptText);
   const [files, setFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -37,31 +47,22 @@ export default function CreateDiscussionForm() {
         }
       }
 
-      const res = await fetch("/api/admin/discussions", {
-        method: "POST",
+      const res = await fetch(`/api/admin/discussions/${discussionId}`, {
+        method: "PATCH",
         body: formData,
       });
 
       if (!res.ok) {
         const data = await res.json();
-        console.warn("[CreateDiscussionForm] POST failed", res.status, data);
-        setError(data.error || "Failed to create discussion");
+        console.warn("[EditDiscussionForm] PATCH failed", res.status, data);
+        setError(data.error || "Failed to save");
         return;
       }
 
-      const created = await res.json();
-      console.info("[CreateDiscussionForm] discussion created", {
-        discussionId: created.id,
-        week: created.week,
-        status: created.status,
-        note: "Check terminal (Next server) for [admin/discussions POST]; Firebase for onDiscussionCreated",
-      });
-
-      setWeek("");
-      setTitle("");
-      setPromptText("");
+      console.info("[EditDiscussionForm] discussion updated", { discussionId });
       setFiles(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      router.push(`/admin/discussions/${discussionId}`);
       router.refresh();
     } catch {
       setError("Something went wrong");
@@ -73,14 +74,22 @@ export default function CreateDiscussionForm() {
   return (
     <form onSubmit={handleSubmit} style={{ ...s.card, marginBottom: "2rem" }}>
       <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "1rem" }}>
-        Create Discussion
+        Edit discussion
       </h2>
       <p style={{ color: "var(--muted)", fontSize: "0.85rem", margin: "0 0 1rem 0" }}>
-        Creating a discussion triggers automatic rubric generation. You can type the prompt,
-        upload a file, or both.
+        Changes save to Firestore. If you change the prompt, use{" "}
+        <strong>Retry Rubric Generation</strong> on the detail page when the rubric should be
+        regenerated.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "7rem 1fr", gap: "0.75rem", alignItems: "start" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "7rem 1fr",
+          gap: "0.75rem",
+          alignItems: "start",
+        }}
+      >
         <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>Week</label>
         <input
           type="number"
@@ -89,7 +98,6 @@ export default function CreateDiscussionForm() {
           onChange={(e) => setWeek(e.target.value)}
           required
           style={{ ...s.input, maxWidth: "8rem" }}
-          placeholder="e.g. 3"
         />
 
         <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>Title</label>
@@ -99,18 +107,21 @@ export default function CreateDiscussionForm() {
           onChange={(e) => setTitle(e.target.value)}
           required
           style={s.input}
-          placeholder="e.g. Ethics in AI"
         />
 
-        <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>Prompt text</label>
+        <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>
+          Prompt text
+        </label>
         <textarea
           value={promptText}
           onChange={(e) => setPromptText(e.target.value)}
           style={s.textarea}
-          placeholder="Type the discussion prompt here (optional if uploading a file)..."
+          placeholder="Discussion prompt..."
         />
 
-        <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>Prompt file</label>
+        <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>
+          Add file
+        </label>
         <input
           ref={fileInputRef}
           type="file"
@@ -122,14 +133,12 @@ export default function CreateDiscussionForm() {
       </div>
 
       {error && (
-        <p style={{ color: "var(--danger)", margin: "0.75rem 0 0", fontSize: "0.85rem" }}>
-          {error}
-        </p>
+        <p style={{ color: "var(--danger)", margin: "0.75rem 0 0", fontSize: "0.85rem" }}>{error}</p>
       )}
 
-      <div style={{ marginTop: "1rem" }}>
+      <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
         <button type="submit" disabled={loading} style={{ ...s.btnPrimary, opacity: loading ? 0.7 : 1 }}>
-          {loading ? "Creating..." : "Create Discussion"}
+          {loading ? "Saving..." : "Save changes"}
         </button>
       </div>
     </form>

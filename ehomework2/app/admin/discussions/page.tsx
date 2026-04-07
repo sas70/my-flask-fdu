@@ -36,18 +36,18 @@ export default async function DiscussionsPage() {
   return (
     <>
       <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "1.5rem" }}>
-        Discussions
+        Discussion Prompts
       </h1>
 
       <CreateDiscussionForm />
 
       <div style={s.card}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "1rem" }}>
-          All Discussions
+          All Discussion Prompts
         </h2>
 
         {discussions.length === 0 ? (
-          <p style={{ color: "var(--muted)" }}>No discussions yet. Create one above.</p>
+          <p style={{ color: "var(--muted)" }}>No discussion prompts yet. Create one above.</p>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={s.table}>
@@ -56,7 +56,6 @@ export default async function DiscussionsPage() {
                   <th style={s.th}>Week</th>
                   <th style={s.th}>Title</th>
                   <th style={s.th}>Rubric</th>
-                  <th style={s.th}>Responses</th>
                   <th style={s.th}>Status</th>
                   <th style={s.th}></th>
                 </tr>
@@ -74,19 +73,15 @@ export default async function DiscussionsPage() {
                       )}
                     </td>
                     <td style={s.td}>
-                      {d.hasResponses ? (
-                        <span style={s.badgeStyle("graded")}>uploaded</span>
-                      ) : (
-                        <span style={s.badgeStyle("pending")}>none</span>
-                      )}
-                    </td>
-                    <td style={s.td}>
                       <span style={s.badgeStyle(discussionStatusColors[d.status] || "pending")}>
                         {d.status.replace(/_/g, " ")}
                       </span>
                     </td>
                     <td style={s.td}>
-                      <Link href={`/admin/discussions/${d.id}`}>View</Link>
+                      <span style={{ display: "inline-flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                        <Link href={`/admin/discussions/${d.id}`}>View</Link>
+                        <Link href={`/admin/discussions/${d.id}/edit`}>Edit</Link>
+                      </span>
                     </td>
                   </tr>
                 ))}

@@ -22,7 +22,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { week, title, description } = body;
+    const { week, title, description, files } = body;
 
     if (!week || !title) {
       return NextResponse.json(
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       week: Number(week),
       title,
       description: description || "",
-      files: [],
+      files: files || [], // array of { name, url, type, size }
     };
 
     const ref = await db.collection("assignments").add(doc);

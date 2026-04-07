@@ -1,10 +1,17 @@
 import { CSSProperties } from "react";
 
+/* ──────────────────────────────────────────────────────────
+   Shared inline styles for admin components.
+   These work alongside the CSS classes in globals.css.
+   Use CSS classes (gf-card, gf-btn-primary, etc.) when possible.
+   Use these for inline overrides and JS-driven styling.
+   ────────────────────────────────────────────────────────── */
+
 export const card: CSSProperties = {
   background: "var(--surface)",
   border: "1px solid var(--border)",
-  borderRadius: "0.75rem",
-  padding: "1.25rem",
+  borderRadius: "var(--radius-lg)",
+  padding: "1.5rem",
 };
 
 export const table: CSSProperties = {
@@ -14,37 +21,38 @@ export const table: CSSProperties = {
 
 export const th: CSSProperties = {
   textAlign: "left",
-  padding: "0.75rem 1rem",
+  padding: "0.6rem 1rem",
   borderBottom: "1px solid var(--border)",
   color: "var(--muted)",
-  fontSize: "0.8rem",
-  fontWeight: 500,
+  fontSize: "0.72rem",
+  fontWeight: 600,
   textTransform: "uppercase",
-  letterSpacing: "0.05em",
+  letterSpacing: "0.06em",
 };
 
 export const td: CSSProperties = {
-  padding: "0.75rem 1rem",
-  borderBottom: "1px solid var(--border)",
-  fontSize: "0.9rem",
+  padding: "0.7rem 1rem",
+  borderBottom: "1px solid var(--border-light, var(--border))",
+  fontSize: "0.875rem",
+  color: "var(--text-secondary, var(--text))",
 };
 
 export const input: CSSProperties = {
-  padding: "0.6rem 0.75rem",
-  background: "var(--surface)",
+  padding: "0.55rem 0.75rem",
+  background: "var(--bg-alt, var(--bg))",
   border: "1px solid var(--border)",
-  borderRadius: "0.5rem",
+  borderRadius: "var(--radius, 8px)",
   color: "var(--text)",
-  fontSize: "0.9rem",
+  fontSize: "0.875rem",
   outline: "none",
   width: "100%",
+  fontFamily: "inherit",
 };
 
 export const textarea: CSSProperties = {
   ...input,
   minHeight: "6rem",
   resize: "vertical" as const,
-  fontFamily: "inherit",
 };
 
 export const select: CSSProperties = {
@@ -54,52 +62,60 @@ export const select: CSSProperties = {
 };
 
 export const btnPrimary: CSSProperties = {
-  padding: "0.6rem 1.25rem",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.4rem",
+  padding: "0.5rem 1rem",
   background: "var(--accent)",
   color: "#fff",
-  border: "none",
-  borderRadius: "0.5rem",
-  fontSize: "0.9rem",
+  border: "1px solid var(--accent)",
+  borderRadius: "var(--radius, 8px)",
+  fontSize: "0.85rem",
   fontWeight: 500,
   cursor: "pointer",
+  whiteSpace: "nowrap" as const,
 };
 
 export const btnDanger: CSSProperties = {
   ...btnPrimary,
-  background: "var(--danger)",
+  background: "var(--danger-subtle, rgba(248,81,73,0.15))",
+  color: "var(--danger)",
+  borderColor: "transparent",
 };
 
 export const btnGhost: CSSProperties = {
   ...btnPrimary,
   background: "transparent",
   border: "1px solid var(--border)",
-  color: "var(--text)",
+  color: "var(--text-secondary, var(--text))",
 };
 
-const statusColors: Record<string, string> = {
-  pending: "var(--muted)",
-  transcribing: "var(--warning)",
-  transcribed: "var(--accent)",
-  grading: "var(--warning)",
-  graded: "var(--success)",
-  transcription_failed: "var(--danger)",
-  grading_failed: "var(--danger)",
-  retry_transcription: "var(--warning)",
-  retry_grading: "var(--warning)",
+const statusMap: Record<string, { bg: string; color: string }> = {
+  pending: { bg: "rgba(139,148,158,0.15)", color: "var(--muted)" },
+  transcribing: { bg: "var(--warning-subtle, rgba(210,153,34,0.15))", color: "var(--warning)" },
+  transcribed: { bg: "var(--accent-subtle, rgba(88,166,255,0.15))", color: "var(--accent)" },
+  grading: { bg: "var(--warning-subtle, rgba(210,153,34,0.15))", color: "var(--warning)" },
+  graded: { bg: "var(--success-subtle, rgba(63,185,80,0.15))", color: "var(--success)" },
+  transcription_failed: { bg: "var(--danger-subtle, rgba(248,81,73,0.15))", color: "var(--danger)" },
+  grading_failed: { bg: "var(--danger-subtle, rgba(248,81,73,0.15))", color: "var(--danger)" },
+  retry_transcription: { bg: "var(--warning-subtle, rgba(210,153,34,0.15))", color: "var(--warning)" },
+  retry_grading: { bg: "var(--warning-subtle, rgba(210,153,34,0.15))", color: "var(--warning)" },
 };
 
 export function badgeStyle(status: string): CSSProperties {
-  const color = statusColors[status] || "var(--muted)";
+  const s = statusMap[status] || statusMap.pending;
   return {
-    display: "inline-block",
-    padding: "0.2rem 0.6rem",
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "0.15rem 0.55rem",
     borderRadius: "9999px",
-    fontSize: "0.75rem",
+    fontSize: "0.7rem",
     fontWeight: 600,
-    background: color,
-    color: status === "transcribing" || status === "grading" || status === "retry_transcription" || status === "retry_grading"
-      ? "#000"
-      : "#fff",
+    letterSpacing: "0.02em",
+    whiteSpace: "nowrap",
+    background: s.bg,
+    color: s.color,
   };
 }
 
@@ -109,13 +125,15 @@ export const statCard: CSSProperties = {
 };
 
 export const statNumber: CSSProperties = {
-  fontSize: "2rem",
+  fontSize: "1.75rem",
   fontWeight: 700,
   lineHeight: 1.2,
 };
 
 export const statLabel: CSSProperties = {
-  fontSize: "0.8rem",
+  fontSize: "0.72rem",
   color: "var(--muted)",
-  marginTop: "0.25rem",
+  textTransform: "uppercase" as const,
+  letterSpacing: "0.06em",
+  marginTop: "0.35rem",
 };

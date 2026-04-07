@@ -29,9 +29,15 @@ export async function POST(
     // Setting status triggers the onDiscussionUpdated Cloud Function
     await ref.update({ status: action });
 
+    console.info("[admin/discussions retry POST]", {
+      discussionId: id,
+      action,
+      note: "Cloud Function onDiscussionUpdated should run for this update",
+    });
+
     return NextResponse.json({ ok: true, status: action });
   } catch (error) {
-    console.error("Discussion retry error:", error);
+    console.error("[admin/discussions retry POST] error:", error);
     return NextResponse.json({ error: "Failed to retry" }, { status: 500 });
   }
 }

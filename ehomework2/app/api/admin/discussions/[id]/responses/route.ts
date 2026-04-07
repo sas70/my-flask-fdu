@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "@/lib/firebase-admin";
 
 export async function POST(
@@ -32,7 +33,10 @@ export async function POST(
     await ref.update({
       responsesText: responsesText.substring(0, 100000),
       responsesFileName: file.name,
+      responsesUploadedAt: FieldValue.serverTimestamp(),
     });
+
+    console.info("[admin/discussions/:id/responses POST] saved", { id, chars: responsesText.length });
 
     return NextResponse.json({ ok: true, chars: responsesText.length });
   } catch (error) {

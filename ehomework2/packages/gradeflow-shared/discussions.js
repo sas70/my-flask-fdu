@@ -220,6 +220,7 @@ async function handleDiscussionCreated(snap, docId) {
     await snap.ref.update({ status: "rubric_generating" });
 
     // Fetch instructor context
+    console.log("1- Fetching instructor context");
     const instrSnap = await db().collection("instructorPreferences").limit(1).get();
     let instructorContext = "";
     if (!instrSnap.empty) {
@@ -233,6 +234,7 @@ async function handleDiscussionCreated(snap, docId) {
 `;
     }
 
+    console.log("2- Generating discussion rubric");
     const rubric = await generateDiscussionRubric(discussion, instructorContext);
 
     const fileName = `discussion-rubrics/week${discussion.week}_rubric.json`;
@@ -277,7 +279,7 @@ async function handleDiscussionUpdated(before, after, docId, ref) {
 
   // Case 2: Retry rubric
   if (before.status !== "retry_rubric" && after.status === "retry_rubric") {
-    console.log(`🔄 Retrying rubric for discussion ${docId}`);
+    console.log(`1- Retrying rubric for discussion ${docId}`);
     try {
       await ref.update({ status: "rubric_generating" });
 
@@ -293,18 +295,21 @@ async function handleDiscussionUpdated(before, after, docId, ref) {
 `;
       }
 
+      console.log("2- Generating discussion rubric");
       const rubric = await generateDiscussionRubric(after, instructorContext);
+      console.log("3- Uploading discussion rubric");
       const fileName = `discussion-rubrics/week${after.week}_rubric_retry.json`;
       const rubricUrl = await uploadJsonToBytescale(rubric, fileName);
-
+      console.log("4- Updating discussion rubric");   
+      console.log("5- Updating discussion rubric generated at");
       await ref.update({
         rubric,
         rubricUrl,
-        status: "rubric_ready",
-        rubricGeneratedAt: FieldValue.serverTimestamp(),
-        error: FieldValue.delete(),
-      });
-
+      status: "rubric_ready",
+      rubricGeneratedAt: FieldValue.serverTimestamp(),
+      error: FieldValue.delete(),
+    });
+      console.log("6- Running discussion analysis");
       // If responses exist, kick off analysis
       if (after.responsesText) {
         const updatedDoc = await ref.get();

@@ -17,6 +17,7 @@ export default async function AssignmentsPage() {
       description: d.description || "",
       hasRubric: !!d.rubric,
       rubricError: d.rubricError || null,
+      filesCount: (d.files || []).length,
       createdAt: doc.createTime?.toDate().toISOString() || null,
     };
   });
@@ -43,6 +44,7 @@ export default async function AssignmentsPage() {
                 <tr>
                   <th style={s.th}>Week</th>
                   <th style={s.th}>Title</th>
+                  <th style={s.th}>Files</th>
                   <th style={s.th}>Rubric</th>
                   <th style={s.th}>Created</th>
                 </tr>
@@ -52,6 +54,13 @@ export default async function AssignmentsPage() {
                   <tr key={a.id}>
                     <td style={s.td}>{a.week}</td>
                     <td style={s.td}>{a.title}</td>
+                    <td style={s.td}>
+                      {a.filesCount > 0 ? (
+                        <span style={{ fontSize: "0.85rem" }}>{a.filesCount}</span>
+                      ) : (
+                        <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>0</span>
+                      )}
+                    </td>
                     <td style={s.td}>
                       {a.rubricError ? (
                         <span style={s.badgeStyle("grading_failed")}>error</span>

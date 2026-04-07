@@ -1,8 +1,16 @@
 /**
  * GradeFlow Cloud Functions — Firestore triggers delegate to @ehomework/gradeflow-shared.
+ *
+ * Secrets must be created in Google Secret Manager and bound here so process.env is
+ * populated in production:
+ *   firebase functions:secrets:set ANTHROPIC_API_KEY
+ *   firebase functions:secrets:set GOOGLE_API_KEY
+ *   firebase functions:secrets:set SECRET_BYTESCALE_API_KEY
+ * Then redeploy: firebase deploy --only functions
  */
 const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
+const { defineSecret } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
 
 const {
@@ -13,9 +21,18 @@ const {
   handleDiscussionUpdated,
 } = require("@ehomework/gradeflow-shared");
 
+const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
+const googleApiKey = defineSecret("GOOGLE_API_KEY");
+const bytescaleSecret = defineSecret("SECRET_BYTESCALE_API_KEY");
+
 initializeApp();
 
-setGlobalOptions({ region: "us-central1", timeoutSeconds: 540, memory: "1GiB" });
+setGlobalOptions({
+  region: "us-central1",
+  timeoutSeconds: 540,
+  memory: "1GiB",
+  secrets: [anthropicApiKey, googleApiKey, bytescaleSecret],
+});
 
 exports.onSubmissionCreated = onDocumentCreated(
   "homeworkSubmissions/{submissionId}",

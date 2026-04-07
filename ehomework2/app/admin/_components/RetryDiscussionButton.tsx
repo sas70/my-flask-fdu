@@ -26,7 +26,15 @@ export default function RetryDiscussionButton({
       });
 
       if (res.ok) {
+        console.info("[RetryDiscussionButton] retry requested", {
+          discussionId,
+          action,
+          note: "Check Next server log and Firebase Functions logs for onDiscussionUpdated",
+        });
         router.refresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        console.warn("[RetryDiscussionButton] retry failed", res.status, err);
       }
     } finally {
       setLoading(false);

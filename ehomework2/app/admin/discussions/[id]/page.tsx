@@ -2,24 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getDb } from "@/lib/firebase-admin";
 import * as s from "@/lib/admin-styles";
-import UploadResponsesForm from "../../_components/UploadResponsesForm";
 import RetryDiscussionButton from "../../_components/RetryDiscussionButton";
 
 export const dynamic = "force-dynamic";
 
-interface InsightItem {
-  student: string;
-  issue?: string;
-  quote?: string;
-  question?: string;
-  summary?: string;
-  standoutQuote?: string;
-  concept?: string;
-  explanation?: string;
-  frequency?: string;
-}
-
-export default async function DiscussionDetailPage({
+export default async function DiscussionPromptDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -33,19 +20,15 @@ export default async function DiscussionDetailPage({
   }
 
   const disc = doc.data()!;
-  const insights = disc.insights as {
-    overallAssessment?: string;
-    redFlags?: InsightItem[];
-    wrongConcepts?: InsightItem[];
-    instructorQuestions?: InsightItem[];
-    topHighQuality?: InsightItem[];
-    topLowQuality?: InsightItem[];
-    generalObservations?: string[];
-  } | undefined;
-
-  const showRetryRubric = disc.status === "rubric_failed";
-  const showRetryAnalysis = disc.status === "analysis_failed";
-  const showUpload = disc.status === "rubric_ready" || disc.status === "analyzed" || disc.status === "analysis_failed";
+  const rubricBusy =
+    disc.status === "rubric_generating" || disc.status === "analyzing";
+  const showRubricAction = !rubricBusy;
+  const rubricActionLabel =
+    disc.status === "rubric_failed"
+      ? "Retry Rubric Generation"
+      : disc.rubric
+        ? "Regenerate rubric"
+        : "Generate rubric";
 
   return (
     <>
@@ -54,7 +37,7 @@ export default async function DiscussionDetailPage({
         href="/admin/discussions"
         style={{ color: "var(--muted)", fontSize: "0.85rem", textDecoration: "none" }}
       >
-        &larr; Back to discussions
+        &larr; Back to discussion prompts
       </Link>
 
       {/* Header */}
@@ -75,238 +58,117 @@ export default async function DiscussionDetailPage({
           Week {disc.week}
         </span>
         <span style={s.badgeStyle(
-          disc.status === "analyzed" ? "graded"
-            : disc.status === "rubric_ready" ? "transcribed"
+          disc.rubric ? "graded"
             : disc.status?.includes("fail") ? "grading_failed"
-            : disc.status?.includes("generating") || disc.status === "analyzing" ? "grading"
+            : disc.status?.includes("generating") ? "grading"
             : "pending"
         )}>
-          {(disc.status || "pending").replace(/_/g, " ")}
+          {disc.rubric ? "rubric ready" : (disc.status || "pending").replace(/_/g, " ")}
         </span>
+        <Link
+          href={`/admin/discussions/${id}/edit`}
+          style={{
+            fontSize: "0.9rem",
+            fontWeight: 500,
+            color: "var(--accent)",
+            textDecoration: "none",
+          }}
+        >
+          Edit
+        </Link>
       </div>
 
-      {/* Retry buttons */}
-      {(showRetryRubric || showRetryAnalysis) && (
-        <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem" }}>
-          {showRetryRubric && (
-            <RetryDiscussionButton
-              discussionId={id}
-              action="retry_rubric"
-              label="Retry Rubric Generation"
-            />
-          )}
-          {showRetryAnalysis && (
-            <RetryDiscussionButton
-              discussionId={id}
-              action="retry_analysis"
-              label="Retry Analysis"
-            />
-          )}
+      {/* Generate / retry / regenerate rubric (sets status → retry_rubric; Cloud Function runs) */}
+      {showRubricAction && (
+        <div style={{ marginBottom: "1.5rem" }}>
+          <p style={{ color: "var(--muted)", fontSize: "0.85rem", margin: "0 0 0.75rem" }}>
+            Rubric is created by a Cloud Function. Use this if the prompt is new, stuck on
+            pending, failed, or you edited the prompt and need a fresh rubric.
+          </p>
+          <RetryDiscussionButton
+            discussionId={id}
+            action="retry_rubric"
+            label={rubricActionLabel}
+          />
         </div>
       )}
 
-      {/* Error */}
+      {rubricBusy && (
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: "1.5rem" }}>
+          Rubric pipeline is running… refresh in a moment.
+        </p>
+      )}
+
+      {/* Error from Cloud Function (rubric or analysis) */}
       {disc.error && (
         <div style={{ ...s.card, borderColor: "var(--danger)", marginBottom: "1.5rem" }}>
           <h2 style={{ fontSize: "0.9rem", fontWeight: 600, margin: "0 0 0.5rem", color: "var(--danger)" }}>
-            Error
+            Pipeline error ({String(disc.status || "").replace(/_/g, " ")})
           </h2>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: "0.8rem", color: "var(--muted)" }}>
             {disc.error}
           </pre>
+          <p style={{ margin: "0.75rem 0 0", fontSize: "0.78rem", color: "var(--muted)", lineHeight: 1.5 }}>
+            Your terminal only shows that this app updated Firestore. The rubric runs in{" "}
+            <strong>Firebase Cloud Functions</strong>. If you see API or auth errors above, set secrets on
+            the function: <code style={{ fontSize: "0.75rem" }}>ANTHROPIC_API_KEY</code>,{" "}
+            <code style={{ fontSize: "0.75rem" }}>SECRET_BYTESCALE_API_KEY</code>, then redeploy. Check{" "}
+            <strong>Firebase Console → Functions → Logs</strong> for <code>onDiscussionUpdated</code>.
+          </p>
         </div>
       )}
 
       {/* Discussion prompt */}
-      <details style={{ ...s.card, marginBottom: "1.5rem" }}>
-        <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: "0.9rem" }}>
-          Discussion Prompt
-        </summary>
+      <div style={{ ...s.card, marginBottom: "1.5rem" }}>
+        <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem" }}>
+          Prompt
+        </h2>
         <pre style={{
-          marginTop: "1rem",
+          margin: 0,
           whiteSpace: "pre-wrap",
           fontSize: "0.85rem",
           lineHeight: 1.5,
           color: "var(--muted)",
-          maxHeight: "20rem",
+          maxHeight: "30rem",
           overflow: "auto",
         }}>
           {disc.promptText}
         </pre>
-      </details>
+      </div>
 
-      {/* Upload responses — show when rubric is ready */}
-      {showUpload && (
-        <UploadResponsesForm discussionId={id} />
-      )}
-
-      {/* Responses info */}
-      {disc.responsesText && (
+      {/* Rubric preview */}
+      {disc.rubric && (
         <details style={{ ...s.card, marginBottom: "1.5rem" }}>
           <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: "0.9rem" }}>
-            Student Responses ({disc.responsesText.length.toLocaleString()} chars)
-            {disc.responsesFileName && (
-              <span style={{ color: "var(--muted)", fontWeight: 400 }}>
-                {" "}— {disc.responsesFileName}
-              </span>
-            )}
+            Generated Rubric
           </summary>
           <pre style={{
             marginTop: "1rem",
             whiteSpace: "pre-wrap",
             fontSize: "0.8rem",
-            lineHeight: 1.5,
+            lineHeight: 1.4,
             color: "var(--muted)",
-            maxHeight: "30rem",
+            maxHeight: "25rem",
             overflow: "auto",
           }}>
-            {disc.responsesText}
+            {JSON.stringify(disc.rubric, null, 2)}
           </pre>
         </details>
       )}
 
-      {/* ─── INSIGHTS ─── */}
-      {insights && (
-        <>
-          {/* Overall Assessment */}
-          {insights.overallAssessment && (
-            <div style={{ ...s.card, marginBottom: "1.5rem" }}>
-              <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem" }}>
-                Overall Assessment
-              </h2>
-              <p style={{ margin: 0, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
-                {insights.overallAssessment}
-              </p>
-            </div>
-          )}
-
-          {/* Red Flags */}
-          {insights.redFlags && insights.redFlags.length > 0 && (
-            <div style={{ ...s.card, borderColor: "var(--danger)", marginBottom: "1.5rem" }}>
-              <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem", color: "var(--danger)" }}>
-                Red Flags
-              </h2>
-              {insights.redFlags.map((flag: InsightItem, i: number) => (
-                <div key={i} style={{ marginBottom: "1rem", paddingBottom: "1rem", borderBottom: i < insights.redFlags!.length - 1 ? "1px solid var(--border)" : "none" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>{flag.student}</div>
-                  <div style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: "0.25rem" }}>{flag.issue}</div>
-                  {flag.quote && (
-                    <div style={{ fontSize: "0.8rem", fontStyle: "italic", color: "var(--muted)", paddingLeft: "0.75rem", borderLeft: "2px solid var(--danger)" }}>
-                      {flag.quote}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Wrong Concepts */}
-          {insights.wrongConcepts && insights.wrongConcepts.length > 0 && (
-            <div style={{ ...s.card, borderColor: "var(--warning)", marginBottom: "1.5rem" }}>
-              <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem", color: "var(--warning)" }}>
-                Misconceptions to Correct
-              </h2>
-              {insights.wrongConcepts.map((wc: InsightItem, i: number) => (
-                <div key={i} style={{ marginBottom: "1rem" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>{wc.concept}</div>
-                  <div style={{ color: "var(--muted)", fontSize: "0.85rem" }}>{wc.explanation}</div>
-                  {wc.frequency && (
-                    <div style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>
-                      Frequency: {wc.frequency}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Instructor Questions */}
-          {insights.instructorQuestions && insights.instructorQuestions.length > 0 && (
-            <div style={{ ...s.card, borderColor: "var(--accent)", marginBottom: "1.5rem" }}>
-              <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem", color: "var(--accent)" }}>
-                Questions / Comments for You
-              </h2>
-              {insights.instructorQuestions.map((q: InsightItem, i: number) => (
-                <div key={i} style={{ marginBottom: "0.75rem" }}>
-                  <span style={{ fontWeight: 600 }}>{q.student}:</span>{" "}
-                  <span style={{ color: "var(--muted)", fontSize: "0.9rem" }}>{q.question}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Top High Quality & Top Low Quality side by side */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem" }}>
-            {insights.topHighQuality && insights.topHighQuality.length > 0 && (
-              <div style={s.card}>
-                <h3 style={{ fontSize: "0.9rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem", color: "var(--success)" }}>
-                  Exceptional Responses
-                </h3>
-                {insights.topHighQuality.map((item: InsightItem, i: number) => (
-                  <div key={i} style={{ marginBottom: "1rem" }}>
-                    <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>{item.student}</div>
-                    <div style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: "0.25rem" }}>{item.summary}</div>
-                    {item.standoutQuote && (
-                      <div style={{ fontSize: "0.8rem", fontStyle: "italic", color: "var(--muted)", paddingLeft: "0.75rem", borderLeft: "2px solid var(--success)" }}>
-                        {item.standoutQuote}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {insights.topLowQuality && insights.topLowQuality.length > 0 && (
-              <div style={s.card}>
-                <h3 style={{ fontSize: "0.9rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem", color: "var(--danger)" }}>
-                  Needs Improvement
-                </h3>
-                {insights.topLowQuality.map((item: InsightItem, i: number) => (
-                  <div key={i} style={{ marginBottom: "1rem" }}>
-                    <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>{item.student}</div>
-                    <div style={{ color: "var(--muted)", fontSize: "0.85rem", marginBottom: "0.25rem" }}>{item.summary}</div>
-                    {item.issue && (
-                      <div style={{ fontSize: "0.8rem", color: "var(--danger)" }}>
-                        Issue: {item.issue}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* General Observations */}
-          {insights.generalObservations && insights.generalObservations.length > 0 && (
-            <div style={{ ...s.card, marginBottom: "1.5rem" }}>
-              <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem" }}>
-                General Observations
-              </h2>
-              <ul style={{ margin: 0, paddingLeft: "1.25rem", color: "var(--muted)", fontSize: "0.9rem", lineHeight: 1.7 }}>
-                {insights.generalObservations.map((obs: string, i: number) => (
-                  <li key={i}>{obs}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
-      )}
-
       {/* Links */}
-      {(disc.rubricUrl || disc.insightsUrl) && (
-        <div style={{ marginTop: "1.5rem", display: "flex", gap: "1rem", fontSize: "0.85rem" }}>
-          {disc.rubricUrl && (
-            <a href={disc.rubricUrl} target="_blank" rel="noopener noreferrer">
-              Rubric JSON
-            </a>
-          )}
-          {disc.insightsUrl && (
-            <a href={disc.insightsUrl} target="_blank" rel="noopener noreferrer">
-              Insights JSON
-            </a>
-          )}
-        </div>
-      )}
+      <div style={{ display: "flex", gap: "1rem", fontSize: "0.85rem" }}>
+        {disc.rubricUrl && (
+          <a href={disc.rubricUrl} target="_blank" rel="noopener noreferrer">
+            Rubric JSON
+          </a>
+        )}
+        {disc.rubric && (
+          <Link href={`/admin/responses/${id}`}>
+            Go to Responses &rarr;
+          </Link>
+        )}
+      </div>
     </>
   );
 }
