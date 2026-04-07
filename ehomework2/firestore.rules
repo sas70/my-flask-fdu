@@ -32,5 +32,15 @@ service cloud.firestore {
     match /systemPrompts/{promptId} {
       allow read, write: if request.auth != null;
     }
+
+    // Student questionnaire CSV uploads + parsed rows (Google Form exports)
+    match /students_survey_collection/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Bulk student introduction .txt uploads (AI parses → matched students' bio)
+    match /students_introduction/{docId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

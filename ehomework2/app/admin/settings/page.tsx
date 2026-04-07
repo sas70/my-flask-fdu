@@ -12,7 +12,19 @@ export default function SettingsPage() {
       </h1>
 
       <ProfileForm />
+
+      <h2
+        style={{
+          fontSize: "1.1rem",
+          fontWeight: 600,
+          marginBottom: "0.75rem",
+          marginTop: 0,
+        }}
+      >
+        Instructor uploads
+      </h2>
       <DocumentUpload />
+
       <PromptsEditor />
     </>
   );

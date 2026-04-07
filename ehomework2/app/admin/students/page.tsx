@@ -12,6 +12,11 @@ export default async function StudentsPage() {
 
   const students = snap.docs.map((doc) => {
     const d = doc.data();
+    const bio = (d.bio || "").trim();
+    const survey = d.surveyResponses as Record<string, string> | undefined;
+    const hasSurvey =
+      !!d.surveyReady ||
+      (survey && Object.keys(survey).some((k) => String(survey[k] || "").trim()));
     return {
       id: doc.id,
       firstName: d.firstName || "",
@@ -19,6 +24,9 @@ export default async function StudentsPage() {
       username: d.username || "",
       email: d.email || "",
       documentsCount: (d.documents || []).length,
+      hasBio: bio.length > 0,
+      hasSurvey,
+      hasProfileSummary: !!(d.instructorProfileSummary && String(d.instructorProfileSummary).trim()),
     };
   });
 
@@ -49,6 +57,9 @@ export default async function StudentsPage() {
                     <th style={s.th}>Name</th>
                     <th style={s.th}>Username</th>
                     <th style={s.th}>Email</th>
+                    <th style={s.th}>Bio</th>
+                    <th style={s.th}>Survey</th>
+                    <th style={s.th}>AI profile</th>
                     <th style={s.th}>Docs</th>
                     <th style={s.th}></th>
                   </tr>
@@ -64,6 +75,27 @@ export default async function StudentsPage() {
                       </td>
                       <td style={{ ...s.td, color: "var(--muted)", fontSize: "0.85rem" }}>
                         {st.email || "—"}
+                      </td>
+                      <td style={s.td}>
+                        {st.hasBio ? (
+                          <span style={s.badgeStyle("graded")}>ready</span>
+                        ) : (
+                          <span style={s.badgeStyle("pending")}>NA</span>
+                        )}
+                      </td>
+                      <td style={s.td}>
+                        {st.hasSurvey ? (
+                          <span style={s.badgeStyle("graded")}>ready</span>
+                        ) : (
+                          <span style={s.badgeStyle("pending")}>NA</span>
+                        )}
+                      </td>
+                      <td style={s.td}>
+                        {st.hasProfileSummary ? (
+                          <span style={s.badgeStyle("graded")}>ready</span>
+                        ) : (
+                          <span style={s.badgeStyle("pending")}>—</span>
+                        )}
                       </td>
                       <td style={s.td}>
                         {st.documentsCount > 0 ? (

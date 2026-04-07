@@ -9,17 +9,19 @@
       ]
     },
     {
-      "collectionGroup": "assignments",
+      "collectionGroup": "students_survey_collection",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "week", "order": "ASCENDING" }
+        { "fieldPath": "kind", "order": "ASCENDING" },
+        { "fieldPath": "uploadedAt", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "discussions",
+      "collectionGroup": "students_introduction",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "week", "order": "ASCENDING" }
+        { "fieldPath": "kind", "order": "ASCENDING" },
+        { "fieldPath": "uploadedAt", "order": "DESCENDING" }
       ]
     }
   ],

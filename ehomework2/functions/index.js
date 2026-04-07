@@ -19,6 +19,10 @@ const {
   handleSubmissionUpdated,
   handleDiscussionCreated,
   handleDiscussionUpdated,
+  handleSurveyCsvUploadCreated,
+  handleStudentProfileCreated,
+  handleStudentProfileUpdated,
+  handleStudentsIntroductionUploadCreated,
 } = require("@ehomework/gradeflow-shared");
 
 const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
@@ -82,3 +86,40 @@ exports.onDiscussionUpdated = onDocumentUpdated(
     await handleDiscussionUpdated(before, after, discussionId, event.data.after.ref);
   }
 );
+
+// ── Student questionnaire CSV + instructor profile summaries ──
+
+exports.onStudentSurveyUploadCreated = onDocumentCreated(
+  "students_survey_collection/{uploadId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    await handleSurveyCsvUploadCreated(snap, event.params.uploadId);
+  }
+);
+
+exports.onStudentsIntroductionUploadCreated = onDocumentCreated(
+  "students_introduction/{uploadId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    await handleStudentsIntroductionUploadCreated(snap, event.params.uploadId);
+  }
+);
+
+exports.onStudentCreated = onDocumentCreated("students/{studentId}", async (event) => {
+  const snap = event.data;
+  if (!snap) return;
+  await handleStudentProfileCreated(snap, event.params.studentId);
+});
+
+exports.onStudentUpdated = onDocumentUpdated("students/{studentId}", async (event) => {
+  const before = event.data.before.data();
+  const after = event.data.after.data();
+  await handleStudentProfileUpdated(
+    before,
+    after,
+    event.params.studentId,
+    event.data.after.ref
+  );
+});

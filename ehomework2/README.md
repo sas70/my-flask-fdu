@@ -5,6 +5,7 @@ Event-driven grading pipeline for Python homework video walkthroughs. Firestore 
 ## CLoud functions
 Here’s how to redeploy Cloud Functions in this repo:
 
+firebase login --reauth 
 One command (recommended)
 # From the project root (ehomework2):
 
@@ -72,12 +73,18 @@ Student uploads video
 | `onSubmissionCreated` | `homeworkSubmissions` onCreate | Transcribes video via Gemini, then checks for rubric |
 | `onAssignmentCreated` | `assignments` onCreate | Generates rubric via Claude, then grades any waiting |
 | `onSubmissionUpdated` | `homeworkSubmissions` onUpdate | Retry handler for failed transcriptions/grading |
+| `onDiscussionCreated` / `onDiscussionUpdated` | `discussions` | Discussion rubric + analysis pipeline ([`discussions.js`](packages/gradeflow-shared/discussions.js)) |
+| `onStudentSurveyUploadCreated` | `students_survey_collection` onCreate | Parses Google Form CSV from `csvUrl`; writes one doc per row; merges questionnaire into `students` matched by **email**, else **fuzzy first+last name** ([`studentSurvey.js`](packages/gradeflow-shared/studentSurvey.js)) |
+| `onStudentsIntroductionUploadCreated` | `students_introduction` onCreate | Fetches intro `.txt` from `textUrl`; Claude extracts each student’s introduction; fuzzy name match → updates `students.bio` ([`studentIntroductions.js`](packages/gradeflow-shared/studentIntroductions.js)) |
+| `onStudentCreated` / `onStudentUpdated` | `students` | Builds `instructorProfileSummary` when bio and/or `surveyResponses` exist (skips if both empty) |
 
 ## Firestore collections
 
 | Collection | Key fields |
 | --- | --- |
-| `students` | firstName, lastName, email, bio, files[{name, url, type}] |
+| `students` | firstName, lastName, email, bio, documents[], optional `surveyResponses`, optional `introductionSourceUploadId` / `introductionMatchScore` (bulk intro file), `instructorProfileSummary` |
+| `students_survey_collection` | `csv_upload` docs (ByteScale `csvUrl`) + `survey_response` rows (`responses` map per Google Form row); uploaded from admin **Survey students** (`/admin/survey-students`) |
+| `students_introduction` | `introduction_text_upload` docs with ByteScale `textUrl`; admin **Students introduction** (`/admin/students-introduction`) |
 | `instructorPreferences` | name, email, dept, bio, notes, documents[{name, url, category}] |
 | `assignments` | week, title, description, files[], rubric{}, rubricUrl |
 | `homeworkSubmissions` | studentId, studentName, week, videos[], urls[], status, grade, … |
@@ -198,7 +205,7 @@ npm run serve
 npm run deploy:functions
 ```
 
-**Firestore rules / indexes:**
+**Firestore rules / indexes** (required after pulling changes that add new indexes, e.g. `students_survey_collection`):
 
 ```bash
 npm run deploy:firestore
@@ -211,7 +218,7 @@ npm run deploy:firestore
 
 | Context | Where keys live |
 | --- | --- |
-| Next.js | `.env.local` (server and `NEXT_PUBLIC_*` for browser). Include `SECRET_BYTESCALE_API_KEY` (and optional `BYTESCALE_ACCOUNT_ID`) if you use admin discussion response uploads. |
+| Next.js | `.env.local` (server and `NEXT_PUBLIC_*` for browser). Include `SECRET_BYTESCALE_API_KEY` (and optional `BYTESCALE_ACCOUNT_ID`) for admin uploads to ByteScale (discussion responses, student questionnaire CSV, instructor documents). |
 | Cloud Functions | Firebase secrets / emulator env — `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `SECRET_BYTESCALE_API_KEY`, `BYTESCALE_ACCOUNT_ID` |
 
 Keep `.env.local` gitignored.
