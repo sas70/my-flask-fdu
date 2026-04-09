@@ -12,7 +12,8 @@ const DEFINED_FUNCTIONS = [
   {
     name: "onSubmissionCreated",
     trigger: "homeworkSubmissions/{id} — onCreate",
-    description: "Transcribes video via Gemini, then grades if rubric exists",
+    description:
+      "Builds combined grading text (Gemini per video unless premergedWalkthroughTranscriptionUrl from tab capture), then grades if rubric exists",
   },
   {
     name: "onAssignmentCreated",
@@ -23,6 +24,11 @@ const DEFINED_FUNCTIONS = [
     name: "onSubmissionUpdated",
     trigger: "homeworkSubmissions/{id} — onUpdate",
     description: "Retries failed transcription or grading",
+  },
+  {
+    name: "onYujaFunnyUrlsUpdated",
+    trigger: "yuja_funny_urls/{docId} — onUpdate",
+    description: "When combined transcript URL is set; syncs submission premerge if needed, audit timestamp",
   },
   {
     name: "onDiscussionCreated",

@@ -47,9 +47,6 @@ export async function GET() {
       docs = snap.docs;
     } catch (firstErr) {
       if (!isMissingIndexError(firstErr)) throw firstErr;
-      console.warn(
-        "[students-introduction GET] composite index missing; using in-memory sort fallback"
-      );
       const snap = await db
         .collection(COLLECTION)
         .where("kind", "==", "introduction_text_upload")

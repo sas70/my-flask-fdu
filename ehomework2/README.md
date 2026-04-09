@@ -47,7 +47,7 @@ Student uploads video
        │ onCreate trigger
        ▼
 ┌──────────────────────┐
-│  1. Transcribe       │ ◄── Gemini 2.0 Flash
+│  1. Transcribe       │ ◄── Gemini 2.5 Flash (optional `GEMINI_TRANSCRIPTION_MODEL`)
 │     Video → Text     │
 └──────┬───────────────┘
        │ uploads to ByteScale
@@ -74,7 +74,7 @@ Student uploads video
 | `onAssignmentCreated` | `assignments` onCreate | Generates rubric via Claude, then grades any waiting |
 | `onSubmissionUpdated` | `homeworkSubmissions` onUpdate | Retry handler for failed transcriptions/grading |
 | `onDiscussionCreated` / `onDiscussionUpdated` | `discussions` | Discussion rubric + analysis pipeline ([`discussions.js`](packages/gradeflow-shared/discussions.js)) |
-| `onStudentSurveyUploadCreated` | `students_survey_collection` onCreate | Parses Google Form CSV from `csvUrl`; writes one doc per row; merges questionnaire into `students` matched by **email**, else **fuzzy first+last name** ([`studentSurvey.js`](packages/gradeflow-shared/studentSurvey.js)) |
+| `onStudentSurveyUploadCreated` | `students_survey_collection` onCreate | Parses Google Form CSV from `csvUrl`; writes one doc per row; merges questionnaire into `students` matched by **email**, else **fuzzy first+last name** ([`studentSurvey.js`](packages/gradeflow-shared/studentSurvey.js)). If the trigger never runs, admin **Survey students** can **Parse CSV on app server** (`PATCH /api/admin/student-questionnaire` with `{ "uploadId" }`) — same handler. |
 | `onStudentsIntroductionUploadCreated` | `students_introduction` onCreate | Fetches intro `.txt` from `textUrl`; Claude extracts each student’s introduction; fuzzy name match → updates `students.bio` ([`studentIntroductions.js`](packages/gradeflow-shared/studentIntroductions.js)) |
 | `onStudentCreated` / `onStudentUpdated` | `students` | Builds `instructorProfileSummary` when bio and/or `surveyResponses` exist (skips if both empty) |
 
@@ -83,11 +83,13 @@ Student uploads video
 | Collection | Key fields |
 | --- | --- |
 | `students` | firstName, lastName, email, bio, documents[], optional `surveyResponses`, optional `introductionSourceUploadId` / `introductionMatchScore` (bulk intro file), `instructorProfileSummary` |
-| `students_survey_collection` | `csv_upload` docs (ByteScale `csvUrl`) + `survey_response` rows (`responses` map per Google Form row); uploaded from admin **Survey students** (`/admin/survey-students`) |
+| `students_survey_collection` | `csv_upload` docs (ByteScale `csvUrl`) + `survey_response` rows (`responses` map per Google Form row); uploaded from admin **Survey students** (`/admin/survey-students`). After parse: `matchedToRosterCount`, `unmatchedRowCount`, capped `matchedStudentSummary` / `unmatchedRowSummary`, optional `summaryTruncated`. Filter Cloud Logs with **`survey CSV`** for per-row match lines. |
 | `students_introduction` | `introduction_text_upload` docs with ByteScale `textUrl`; admin **Students introduction** (`/admin/students-introduction`) |
 | `instructorPreferences` | name, email, dept, bio, notes, documents[{name, url, category}] |
 | `assignments` | week, title, description, files[], rubric{}, rubricUrl |
-| `homeworkSubmissions` | studentId, studentName, week, videos[], urls[], status, grade, … |
+| `homeworkSubmissions` | studentId, studentName, week, `videos[{name,url,mimeType?}]` (ByteScale **raw** URLs), optional `attachments[{name,url,mimeType}]` for PDF, text, **`.py`**, **`.ipynb`** (also on ByteScale), optional `urls[]`, optional `referencePlaybackUrl` (Yuja/LMS link for audit), optional `captureSessionId` / `ingestSource` (e.g. `admin_browser_capture`), optional **`yujaFunnyUrlsDocId`** / **`premergedWalkthroughTranscriptionUrl`** (tab capture with reference URL: merged segment transcripts on ByteScale — Cloud Function **skips per-video Gemini** when `premergedWalkthroughTranscriptionUrl` is set), status, transcription, grade, … Create via **Homework → Submissions** or **Manage → Students → student**; `POST /api/admin/homework-ingest` (files + URLs) or **tab capture** (`/api/admin/homework-capture/session`, `…/chunk`, `…/chunk-transcribe`, `…/finalize`). `onSubmissionCreated` builds combined text (Gemini per video **unless** premerged URL exists), extracts documents, merges, then grades (Claude). |
+| `homeworkCaptureSessions` | Short-lived admin-only capture: `studentId`, `week`, optional `referencePlaybackUrl`, optional `referencePlaybackUrlKey`, optional **`yujaFunnyUrlsDocId`** (links to one doc in `yuja_funny_urls` per normalized video URL), `status` (`open` \| `finalized`), subcollection `chunks` with `chunkIndex`, ByteScale `url` per segment (~**1 min** WebM slices by default; override `NEXT_PUBLIC_HOMEWORK_CAPTURE_CHUNK_MS`). **Resume:** same student + week + normalized reference URL reuses an **open** session (see [`/api/admin/homework-capture/resume`](app/api/admin/homework-capture/resume/route.ts)). UI: **Homework → Tab capture** ([`/admin/homework-capture`](app/admin/homework-capture/page.tsx)). |
+| `yuja_funny_urls` | **One document per normalized Yuja / LMS video URL** (`referencePlaybackUrlKey`). Fields: `referencePlaybackUrl`, **`segments`** map (`chunkUrl`, `transcriptUrl` per index), optional **`combinedTranscriptionUrl`** after merge, optional **`combinedTranscriptionListenerAt`** (set by Cloud Function when combined URL is written). Merge requires **≥ ~90%** of session chunks to have segment transcripts (`ceil(n×0.9)`); omitted segments are listed in the merged text header. Tab capture UI polls [`GET /api/admin/homework-capture/yuja-status`](app/api/admin/homework-capture/yuja-status/route.ts). **`onYujaFunnyUrlsUpdated`** (Cloud Function) runs when `combinedTranscriptionUrl` appears — syncs `homeworkSubmissions` if needed and records listener timestamp. Manual merge: [`POST /api/admin/yuja-funny-urls/merge`](app/api/admin/yuja-funny-urls/merge/route.ts). |
 | `discussions` | One document per discussion week: prompt, rubric, uploaded responses, generated insights (see below) |
 
 ### `discussions` document schema
@@ -218,8 +220,8 @@ npm run deploy:firestore
 
 | Context | Where keys live |
 | --- | --- |
-| Next.js | `.env.local` (server and `NEXT_PUBLIC_*` for browser). Include `SECRET_BYTESCALE_API_KEY` (and optional `BYTESCALE_ACCOUNT_ID`) for admin uploads to ByteScale (discussion responses, student questionnaire CSV, instructor documents). |
-| Cloud Functions | Firebase secrets / emulator env — `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `SECRET_BYTESCALE_API_KEY`, `BYTESCALE_ACCOUNT_ID` |
+| Next.js | `.env.local` (server and `NEXT_PUBLIC_*` for browser). Include `SECRET_BYTESCALE_API_KEY` (and optional `BYTESCALE_ACCOUNT_ID`) for admin uploads to ByteScale (discussion responses, student questionnaire CSV, instructor documents). For **tab capture segment transcription** ([`/api/admin/homework-capture/chunk-transcribe`](app/api/admin/homework-capture/chunk-transcribe/route.ts)), also set **`GOOGLE_API_KEY`** (and optional **`GEMINI_TRANSCRIPTION_MODEL`**) — same key as Cloud Functions Gemini. |
+| Cloud Functions | Firebase secrets / emulator env — `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `SECRET_BYTESCALE_API_KEY`, `BYTESCALE_ACCOUNT_ID`. Optional: `GEMINI_TRANSCRIPTION_MODEL` (defaults to `gemini-2.5-flash` in [`gradeFlow.js`](packages/gradeflow-shared/gradeFlow.js)). |
 
 Keep `.env.local` gitignored.
 

@@ -22,7 +22,9 @@ export default async function SubmissionDetailPage({
   const sub = doc.data()!;
 
   const showRetryTranscription =
-    sub.status === "transcription_failed" || sub.status === "pending";
+    sub.status === "transcription_failed" ||
+    sub.status === "pending" ||
+    sub.status === "transcribing";
   const showRetryGrading =
     sub.status === "grading_failed" || sub.status === "transcribed";
 

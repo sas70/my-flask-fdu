@@ -136,6 +136,12 @@ function extractNamePartsFromRow(rowObj) {
 /**
  * Firestore onCreate: students_survey_collection/{id} with kind === "csv_upload"
  */
+function rosterDisplayName(roster, studentId) {
+  const s = roster.find((r) => r.id === studentId);
+  if (!s) return studentId;
+  return [s.firstName, s.lastName].filter(Boolean).join(" ").trim() || studentId;
+}
+
 async function handleSurveyCsvUploadCreated(snap, docId) {
   const data = snap.data();
   if (data.kind !== "csv_upload" || !data.csvUrl) {
@@ -143,7 +149,12 @@ async function handleSurveyCsvUploadCreated(snap, docId) {
     return;
   }
 
+  console.log(
+    `[survey CSV] ▶ START uploadId=${docId} file=${data.fileName || "?"} csvUrl=${data.csvUrl}`
+  );
+
   await snap.ref.update({ status: "processing", error: FieldValue.delete() });
+  console.log(`[survey CSV] status→processing uploadId=${docId}`);
 
   try {
     const res = await fetch(data.csvUrl);
@@ -162,6 +173,17 @@ async function handleSurveyCsvUploadCreated(snap, docId) {
     }
 
     const { emailMap, roster } = await buildStudentRoster();
+    console.log(
+      `[survey CSV] fetched CSV uploadId=${docId} rows=${objects.length} rosterStudents=${roster.length}`
+    );
+
+    /** @type {object[]} */
+    const matchedStudentSummary = [];
+    /** @type {object[]} */
+    const unmatchedRowSummary = [];
+    const MAX_SUMMARY = 80;
+    let matchedToRosterCount = 0;
+    let unmatchedRowCount = 0;
 
     let batch = db().batch();
     let opCount = 0;
@@ -178,6 +200,7 @@ async function handleSurveyCsvUploadCreated(snap, docId) {
       const emailRaw = findEmailInRow(responses);
       const emailNorm = normalizeEmail(emailRaw);
       const { first: csvFirst, last: csvLast } = extractNamePartsFromRow(responses);
+      const nameFromForm = [csvFirst, csvLast].filter(Boolean).join(" ").trim() || "(no name cols)";
 
       let matchedStudentId = emailNorm ? emailMap.get(emailNorm) || null : null;
       let matchedBy = matchedStudentId ? "email" : null;
@@ -189,6 +212,41 @@ async function handleSurveyCsvUploadCreated(snap, docId) {
           matchedStudentId = nameHit.id;
           matchedBy = "name_fuzzy";
           nameMatchScore = nameHit.score;
+        }
+      }
+
+      if (matchedStudentId) {
+        matchedToRosterCount += 1;
+        const rosterName = rosterDisplayName(roster, matchedStudentId);
+        console.log(
+          `[survey CSV] row ${idx} MATCH ✓ studentId=${matchedStudentId} roster="${rosterName}" via=${matchedBy}` +
+            (emailNorm ? ` email=${emailNorm}` : "") +
+            (nameMatchScore != null ? ` nameScore=${nameMatchScore.toFixed(3)}` : "") +
+            ` formName="${nameFromForm}"`
+        );
+        if (matchedStudentSummary.length < MAX_SUMMARY) {
+          matchedStudentSummary.push({
+            rowIndex: idx,
+            studentId: matchedStudentId,
+            rosterName,
+            method: matchedBy,
+            email: emailRaw || null,
+            nameFromForm,
+            nameMatchScore: nameMatchScore != null ? Number(nameMatchScore.toFixed(4)) : null,
+          });
+        }
+      } else {
+        unmatchedRowCount += 1;
+        console.log(
+          `[survey CSV] row ${idx} NO MATCH ✗ email=${emailNorm || emailRaw || "none"} formName="${nameFromForm}"`
+        );
+        if (unmatchedRowSummary.length < MAX_SUMMARY) {
+          unmatchedRowSummary.push({
+            rowIndex: idx,
+            email: emailRaw || null,
+            nameFromForm,
+            reason: "no roster student matched (check email + first/last name columns vs roster)",
+          });
         }
       }
 
@@ -242,11 +300,20 @@ async function handleSurveyCsvUploadCreated(snap, docId) {
     await snap.ref.update({
       status: "complete",
       rowCount: objects.length,
+      matchedToRosterCount,
+      unmatchedRowCount,
+      matchedStudentSummary,
+      unmatchedRowSummary,
+      summaryTruncated:
+        matchedToRosterCount > matchedStudentSummary.length ||
+        unmatchedRowCount > unmatchedRowSummary.length,
       processedAt: FieldValue.serverTimestamp(),
       error: FieldValue.delete(),
     });
 
-    console.log(`✅ Survey CSV processed: ${docId}, ${objects.length} rows`);
+    console.log(
+      `[survey CSV] ✅ DONE uploadId=${docId} rows=${objects.length} matched=${matchedToRosterCount} unmatched=${unmatchedRowCount} (Firebase doc fields + Cloud Logging)`
+    );
   } catch (err) {
     console.error(`❌ Survey CSV processing failed ${docId}:`, err);
     await snap.ref.update({

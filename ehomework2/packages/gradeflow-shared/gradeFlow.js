@@ -1,8 +1,13 @@
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { uploadTextToBytescale, uploadJsonToBytescale } = require("./bytescale");
 const { getPrompt } = require("./prompts");
+const { extractTextFromBuffer, fetchUrlBytes } = require("./documentExtract");
 
 const GOOGLE_API_KEY = () => process.env.GOOGLE_API_KEY;
+
+/** Google AI Studio model id for video transcription (override with GEMINI_TRANSCRIPTION_MODEL). */
+const GEMINI_TRANSCRIPTION_MODEL =
+  process.env.GEMINI_TRANSCRIPTION_MODEL || "gemini-2.5-flash";
 const ANTHROPIC_API_KEY = () => process.env.ANTHROPIC_API_KEY;
 
 function db() {
@@ -19,11 +24,13 @@ Include:
 
 Format the transcription clearly with paragraphs. Do NOT summarize — provide the full word-for-word transcription.`;
 
-async function transcribeWithGemini(videoUrl) {
+async function transcribeWithGemini(videoUrl, mimeType = "video/mp4") {
   const customPrompt = await getPrompt("videoTranscription");
   const promptText = customPrompt || DEFAULT_TRANSCRIPTION_PROMPT;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_API_KEY()}`;
+  const mt = mimeType && String(mimeType).trim() ? String(mimeType).trim() : "video/mp4";
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TRANSCRIPTION_MODEL}:generateContent?key=${GOOGLE_API_KEY()}`;
 
   const response = await fetch(url, {
     method: "POST",
@@ -34,7 +41,7 @@ async function transcribeWithGemini(videoUrl) {
           parts: [
             {
               fileData: {
-                mimeType: "video/mp4",
+                mimeType: mt,
                 fileUri: videoUrl,
               },
             },
@@ -64,6 +71,83 @@ async function transcribeWithGemini(videoUrl) {
   }
 
   return text;
+}
+
+const GRADING_INPUT_MAX = 80000;
+
+/**
+ * Video transcription (Gemini) + PDF/plain-text extraction from ByteScale URLs.
+ * @param {object} submission Firestore homeworkSubmissions data
+ * @param {string} submissionId
+ * @returns {Promise<string>}
+ */
+async function buildCombinedGradingInput(submission, submissionId) {
+  const videoParts = [];
+  for (const v of submission.videos || []) {
+    if (v && v.url) {
+      videoParts.push({
+        url: v.url,
+        mime: v.mimeType || "video/mp4",
+      });
+    }
+  }
+  for (const u of submission.urls || []) {
+    if (u) {
+      videoParts.push({ url: u, mime: "video/mp4" });
+    }
+  }
+
+  const attachments = submission.attachments || [];
+
+  const sections = [];
+
+  const premergedUrl = submission.premergedWalkthroughTranscriptionUrl;
+  if (premergedUrl && String(premergedUrl).trim()) {
+    console.log(
+      `[hw submission] using premerged walkthrough transcript (skip per-video Gemini) submissionId=${submissionId}`
+    );
+    const buf = await fetchUrlBytes(String(premergedUrl).trim());
+    const text = buf.toString("utf8");
+    sections.push(
+      "## Video walkthrough transcription(s)\n\n### Merged segment transcripts\n\n" + text
+    );
+  } else if (videoParts.length > 0) {
+    const transcriptions = [];
+    for (let i = 0; i < videoParts.length; i++) {
+      const { url, mime } = videoParts[i];
+      console.log(
+        `[hw submission] transcribe video ${i + 1}/${videoParts.length} submissionId=${submissionId}`
+      );
+      const text = await transcribeWithGemini(url, mime);
+      transcriptions.push(`### Video part ${i + 1}\n\n${text}`);
+    }
+    sections.push("## Video walkthrough transcription(s)\n\n" + transcriptions.join("\n\n"));
+  }
+
+  if (attachments.length > 0) {
+    const docBlocks = [];
+    for (let j = 0; j < attachments.length; j++) {
+      const att = attachments[j] || {};
+      const name = att.name || `document_${j + 1}`;
+      const url = att.url;
+      const mime = att.mimeType || "";
+      if (!url) continue;
+      try {
+        console.log(`[hw submission] extract document ${name} submissionId=${submissionId}`);
+        const buf = await fetchUrlBytes(url);
+        const text = await extractTextFromBuffer(buf, mime, name);
+        docBlocks.push(`### ${name}\n\n${text}`);
+      } catch (err) {
+        console.error(`[hw submission] document extract failed ${name}:`, err);
+        docBlocks.push(`### ${name}\n\n[Could not extract text: ${err.message}]`);
+      }
+    }
+    if (docBlocks.length > 0) {
+      sections.push("## Submitted documents (extracted text)\n\n" + docBlocks.join("\n\n"));
+    }
+  }
+
+  return sections.join("\n\n---\n\n").substring(0, GRADING_INPUT_MAX);
 }
 
 async function buildHwRubricPrompt(assignment, instructorContext) {
@@ -129,7 +213,7 @@ async function buildHwGradingPrompt(rubric, assignment, gradingNotes, transcript
       .replace(/\{\{title\}\}/g, assignment.title || `Week ${assignment.week}`)
       .replace(/\{\{description\}\}/g, assignment.description || "")
       .replace(/\{\{gradingNotes\}\}/g, gradingNotes || "No specific preferences noted.")
-      .replace(/\{\{transcription\}\}/g, transcriptionText.substring(0, 40000));
+      .replace(/\{\{transcription\}\}/g, transcriptionText.substring(0, GRADING_INPUT_MAX));
   }
   return `You are an expert teaching assistant grading a Python programming assignment.
 
@@ -143,11 +227,11 @@ ${assignment.description || ""}
 ## Instructor Grading Preferences
 ${gradingNotes || "No specific preferences noted."}
 
-## Student Video Transcription
-${transcriptionText.substring(0, 40000)}
+## Student submission (video transcription and/or submitted document text)
+${transcriptionText.substring(0, GRADING_INPUT_MAX)}
 
 ## Task
-Grade this student's submission based on the rubric above. Evaluate what they said, the code they showed, and the quality of their explanations.
+Grade this student's submission based on the rubric above. Use the video transcription and any extracted document text (PDFs, written answers). Evaluate explanations, code or written work, and alignment with the assignment.
 
 Return ONLY valid JSON (no markdown fences) with this exact structure:
 {
@@ -212,14 +296,20 @@ async function generateRubricWithClaude(assignment, instructorContext) {
 }
 
 async function maybeGrade(submissionId, week, transcriptionText) {
+  const w = Number(week);
+  if (week == null || week === "" || Number.isNaN(w)) {
+    console.log(`[hw submission] skip maybeGrade submissionId=${submissionId} — invalid week: ${week}`);
+    return;
+  }
+
   const assignmentSnap = await db()
     .collection("assignments")
-    .where("week", "==", Number(week))
+    .where("week", "==", w)
     .limit(1)
     .get();
 
   if (assignmentSnap.empty) {
-    console.log(`⏳ No assignment found for Week ${week} — grading deferred`);
+    console.log(`[hw submission] No assignment for week ${w} — grading deferred submissionId=${submissionId}`);
     return;
   }
 
@@ -229,33 +319,63 @@ async function maybeGrade(submissionId, week, transcriptionText) {
     return;
   }
 
-  console.log(`🎯 Both ready! Grading submission ${submissionId} for Week ${week}`);
+  console.log(`[hw submission] Grading submissionId=${submissionId} week=${w}`);
   await gradeSubmission(submissionId, transcriptionText, assignment);
 }
 
 async function gradeWaitingSubmissions(week, rubric) {
-  const waitingSnap = await db()
-    .collection("homeworkSubmissions")
-    .where("week", "==", String(week))
-    .where("status", "==", "transcribed")
-    .get();
-
-  if (waitingSnap.empty) {
-    console.log(`📋 No transcribed submissions waiting for Week ${week}`);
+  const w = Number(week);
+  if (week == null || week === "" || Number.isNaN(w)) {
+    console.log(`[hw submission] gradeWaitingSubmissions skipped — invalid week: ${week}`);
     return;
   }
 
-  console.log(`🎯 Found ${waitingSnap.size} submissions to grade for Week ${week}`);
+  const weekStr = String(week);
+  const [snapStr, snapNum] = await Promise.all([
+    db()
+      .collection("homeworkSubmissions")
+      .where("week", "==", weekStr)
+      .where("status", "==", "transcribed")
+      .get(),
+    db()
+      .collection("homeworkSubmissions")
+      .where("week", "==", w)
+      .where("status", "==", "transcribed")
+      .get(),
+  ]);
+
+  const seen = new Set();
+  const waitingDocs = [];
+  for (const snap of [snapStr, snapNum]) {
+    for (const doc of snap.docs) {
+      if (!seen.has(doc.id)) {
+        seen.add(doc.id);
+        waitingDocs.push(doc);
+      }
+    }
+  }
+
+  if (waitingDocs.length === 0) {
+    console.log(`[hw submission] No transcribed submissions waiting for week ${w}`);
+    return;
+  }
+
+  console.log(`[hw submission] Batch grade ${waitingDocs.length} submission(s) for week ${w}`);
 
   const assignmentSnap = await db()
     .collection("assignments")
-    .where("week", "==", Number(week))
+    .where("week", "==", w)
     .limit(1)
     .get();
 
+  if (assignmentSnap.empty) {
+    console.log(`[hw submission] No assignment doc for week ${w} — skip batch grade`);
+    return;
+  }
+
   const assignment = assignmentSnap.docs[0].data();
 
-  for (const doc of waitingSnap.docs) {
+  for (const doc of waitingDocs) {
     const sub = doc.data();
     const transcription = sub.transcriptionText || "Transcription not available inline";
     await gradeSubmission(doc.id, transcription, assignment);
@@ -346,57 +466,61 @@ async function gradeSubmission(submissionId, transcriptionText, assignment) {
 async function handleSubmissionCreated(snap, submissionId) {
   const submission = snap.data();
 
-  console.log(`📹 New submission: ${submissionId} — ${submission.studentName}, Week ${submission.week}`);
+  console.log(
+    `[hw submission] onCreate submissionId=${submissionId} student=${submission.studentName} week=${submission.week}`
+  );
 
   // Guard: skip if already being processed (prevents duplicate work on retries)
   if (submission.status && submission.status !== "pending") {
-    console.log(`⏭️ Submission ${submissionId} already has status "${submission.status}" — skipping`);
+    console.log(`[hw submission] skip — status already "${submission.status}" submissionId=${submissionId}`);
+    return;
+  }
+
+  const videoUrls = [
+    ...(submission.videos || []).map((v) => v.url),
+    ...(submission.urls || []),
+  ].filter(Boolean);
+
+  const attachments = submission.attachments || [];
+
+  if (videoUrls.length === 0 && attachments.length === 0) {
+    console.warn(`[hw submission] no videos or documents submissionId=${submissionId}`);
+    await snap.ref.update({
+      status: "transcription_failed",
+      error:
+        "No processable content. Add video URLs in videos[]/urls[] and/or PDF/text files in attachments[] (ByteScale URLs).",
+    });
     return;
   }
 
   try {
-    // Set status immediately to prevent duplicate processing
-    await snap.ref.update({ status: "transcribing" });
+    await snap.ref.update({ status: "transcribing", error: FieldValue.delete() });
 
-    const videoUrls = [
-      ...(submission.videos || []).map((v) => v.url),
-      ...(submission.urls || []),
-    ].filter(Boolean);
+    const fullCorpus = await buildCombinedGradingInput(submission, submissionId);
 
-    if (videoUrls.length === 0) {
-      console.warn("⚠️ No video URLs found in submission");
-      return;
+    if (!fullCorpus || !String(fullCorpus).trim()) {
+      throw new Error("Combined submission text is empty after transcription and document extraction");
     }
-
-    const transcriptions = [];
-    for (let i = 0; i < videoUrls.length; i++) {
-      const url = videoUrls[i];
-      console.log(`🎙️ Transcribing video ${i + 1}/${videoUrls.length}: ${url}`);
-      const text = await transcribeWithGemini(url);
-      transcriptions.push(`--- Part ${i + 1} ---\n${text}`);
-    }
-
-    const fullTranscription = transcriptions.join("\n\n");
 
     const fileName = `transcriptions/${submissionId}_week${submission.week}.txt`;
-    const transcriptionUrl = await uploadTextToBytescale(fullTranscription, fileName);
-    console.log(`☁️ Transcription uploaded to ByteScale: ${transcriptionUrl}`);
+    const transcriptionUrl = await uploadTextToBytescale(fullCorpus, fileName);
+    console.log(`[hw submission] combined text uploaded to ByteScale submissionId=${submissionId}`);
 
     await snap.ref.update({
       transcriptionUrl,
-      transcriptionText: fullTranscription.substring(0, 50000),
+      transcriptionText: fullCorpus.substring(0, 80000),
       status: "transcribed",
       transcribedAt: FieldValue.serverTimestamp(),
     });
 
-    console.log(`✅ Submission ${submissionId} transcribed`);
+    console.log(`[hw submission] transcribed submissionId=${submissionId}`);
 
-    await maybeGrade(submissionId, submission.week, fullTranscription);
+    await maybeGrade(submissionId, submission.week, fullCorpus);
   } catch (error) {
-    console.error(`❌ Transcription failed for ${submissionId}:`, error);
+    console.error(`[hw submission] transcription failed submissionId=${submissionId}`, error);
     await snap.ref.update({
       status: "transcription_failed",
-      error: error.message,
+      error: error.message || String(error),
     });
   }
 }
@@ -465,31 +589,36 @@ async function handleSubmissionUpdated(before, after, submissionId, afterRef) {
       ...(after.urls || []),
     ].filter(Boolean);
 
-    if (videoUrls.length === 0) return;
+    const attachments = after.attachments || [];
+
+    if (videoUrls.length === 0 && attachments.length === 0) {
+      await afterRef.update({
+        status: "transcription_failed",
+        error: "No videos or documents to process (videos/urls/attachments empty).",
+      });
+      return;
+    }
 
     try {
-      const transcriptions = [];
-      for (let i = 0; i < videoUrls.length; i++) {
-        const text = await transcribeWithGemini(videoUrls[i]);
-        transcriptions.push(`--- Part ${i + 1} ---\n${text}`);
-      }
-      const fullTranscription = transcriptions.join("\n\n");
+      await afterRef.update({ status: "transcribing", error: FieldValue.delete() });
+
+      const fullCorpus = await buildCombinedGradingInput(after, submissionId);
       const fileName = `transcriptions/${submissionId}_week${after.week}_retry.txt`;
-      const transcriptionUrl = await uploadTextToBytescale(fullTranscription, fileName);
+      const transcriptionUrl = await uploadTextToBytescale(fullCorpus, fileName);
 
       await afterRef.update({
         transcriptionUrl,
-        transcriptionText: fullTranscription.substring(0, 50000),
+        transcriptionText: fullCorpus.substring(0, 80000),
         status: "transcribed",
         transcribedAt: FieldValue.serverTimestamp(),
         error: FieldValue.delete(),
       });
 
-      await maybeGrade(submissionId, after.week, fullTranscription);
+      await maybeGrade(submissionId, after.week, fullCorpus);
     } catch (error) {
       await afterRef.update({
         status: "transcription_failed",
-        error: error.message,
+        error: error.message || String(error),
       });
     }
   }
@@ -516,6 +645,7 @@ async function handleSubmissionUpdated(before, after, submissionId, afterRef) {
 
 module.exports = {
   transcribeWithGemini,
+  buildCombinedGradingInput,
   generateRubricWithClaude,
   maybeGrade,
   gradeWaitingSubmissions,

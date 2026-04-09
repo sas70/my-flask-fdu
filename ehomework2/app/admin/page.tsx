@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDb } from "@/lib/firebase-admin";
+import { getStudentProfileFlags } from "@/lib/student-profile-flags";
 import * as s from "@/lib/admin-styles";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,27 @@ export default async function DashboardPage() {
     db.collection("discussions").get(),
     db.collection("students").get(),
   ]);
+
+  const studentTotal = studentsSnap.size;
+  let withBio = 0;
+  let withSurvey = 0;
+  let withAiProfile = 0;
+  let withAiError = 0;
+  let withIntroFile = 0;
+  let awaitingAiProfile = 0;
+  let attachedDocs = 0;
+
+  studentsSnap.forEach((doc) => {
+    const d = doc.data();
+    const f = getStudentProfileFlags(d);
+    if (f.hasBio) withBio += 1;
+    if (f.hasSurvey) withSurvey += 1;
+    if (f.hasProfileSummary) withAiProfile += 1;
+    if (f.hasProfileError) withAiError += 1;
+    if (f.hasIntroFromUpload) withIntroFile += 1;
+    if (f.awaitingProfileSummary) awaitingAiProfile += 1;
+    attachedDocs += Array.isArray(d.documents) ? d.documents.length : 0;
+  });
 
   const byStatus: Record<string, number> = {};
   const recent: Array<{
@@ -60,8 +82,14 @@ export default async function DashboardPage() {
       {/* Stat cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(10rem, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
         <div style={s.statCard}>
-          <div style={s.statNumber}>{studentsSnap.size}</div>
+          <div style={s.statNumber}>{studentTotal}</div>
           <div style={s.statLabel}>Students</div>
+          <Link
+            href="/admin/students"
+            style={{ fontSize: "0.72rem", color: "var(--accent)", marginTop: "0.5rem", display: "inline-block" }}
+          >
+            Manage roster →
+          </Link>
         </div>
         <div style={s.statCard}>
           <div style={s.statNumber}>{assignmentsSnap.size}</div>
@@ -86,6 +114,110 @@ export default async function DashboardPage() {
         <div style={s.statCard}>
           <div style={{ ...s.statNumber, color: "var(--accent)" }}>{discussionsSnap.size}</div>
           <div style={s.statLabel}>Discussions</div>
+        </div>
+      </div>
+
+      {/* Student profiles: bio, questionnaire, AI summaries, introductions */}
+      <div style={{ ...s.card, marginBottom: "2rem" }}>
+        <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.35rem" }}>
+          Student profiles &amp; AI
+        </h2>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "0 0 1.25rem" }}>
+          Counts match the <Link href="/admin/students">Students</Link> table. Bios can be edited per student or bulk-imported via{" "}
+          <Link href="/admin/students-introduction">Students introduction</Link>. Questionnaires come from{" "}
+          <Link href="/admin/survey-students">Survey students</Link>. The Cloud Function{" "}
+          <code style={{ fontSize: "0.72rem" }}>onStudentUpdated</code> builds instructor-facing{" "}
+          <strong>AI profile</strong> summaries when a student has a bio and/or matched survey data.
+        </p>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(9rem, 1fr))",
+            gap: "0.75rem",
+            marginBottom: "1.25rem",
+          }}
+        >
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div style={{ ...s.statNumber, fontSize: "1.35rem" }}>{withBio}</div>
+            <div style={s.statLabel}>With bio</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              of {studentTotal}
+            </div>
+          </div>
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div style={{ ...s.statNumber, fontSize: "1.35rem", color: "var(--accent)" }}>{withSurvey}</div>
+            <div style={s.statLabel}>Questionnaire</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              survey matched
+            </div>
+          </div>
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div style={{ ...s.statNumber, fontSize: "1.35rem", color: "var(--success)" }}>{withAiProfile}</div>
+            <div style={s.statLabel}>AI profile</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              instructor summary
+            </div>
+          </div>
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div
+              style={{
+                ...s.statNumber,
+                fontSize: "1.35rem",
+                color: withAiError > 0 ? "var(--danger)" : "var(--muted)",
+              }}
+            >
+              {withAiError}
+            </div>
+            <div style={s.statLabel}>AI errors</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              summary failed
+            </div>
+          </div>
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div style={{ ...s.statNumber, fontSize: "1.35rem" }}>{withIntroFile}</div>
+            <div style={s.statLabel}>Intro file</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              bulk upload
+            </div>
+          </div>
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div
+              style={{
+                ...s.statNumber,
+                fontSize: "1.35rem",
+                color: awaitingAiProfile > 0 ? "var(--warning)" : "var(--muted)",
+              }}
+            >
+              {awaitingAiProfile}
+            </div>
+            <div style={s.statLabel}>Awaiting AI</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              bio/survey, no summary yet
+            </div>
+          </div>
+          <div style={{ ...s.statCard, padding: "1rem", textAlign: "center" }}>
+            <div style={{ ...s.statNumber, fontSize: "1.35rem" }}>{attachedDocs}</div>
+            <div style={s.statLabel}>Attached files</div>
+            <div style={{ fontSize: "0.68rem", color: "var(--muted)", marginTop: "0.25rem" }}>
+              on student records
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          <Link href="/admin/students" style={{ ...s.btnGhost, fontSize: "0.8rem", textDecoration: "none" }}>
+            Students
+          </Link>
+          <Link href="/admin/survey-students" style={{ ...s.btnGhost, fontSize: "0.8rem", textDecoration: "none" }}>
+            Survey students
+          </Link>
+          <Link
+            href="/admin/students-introduction"
+            style={{ ...s.btnGhost, fontSize: "0.8rem", textDecoration: "none" }}
+          >
+            Students introduction
+          </Link>
         </div>
       </div>
 

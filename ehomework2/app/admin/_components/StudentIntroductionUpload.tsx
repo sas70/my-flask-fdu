@@ -42,11 +42,30 @@ export default function StudentIntroductionUpload() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/students-introduction");
-      const data = await res.json();
-      if (res.ok) {
-        setUploads(data.uploads || []);
+      const res = await fetch("/api/admin/students-introduction", {
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        setError("Session expired or not logged in — open /login and sign in again.");
+        setUploads([]);
+        return;
       }
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : `Could not load status (${res.status})`);
+        setUploads([]);
+        return;
+      }
+      setUploads(data.uploads || []);
+      setError("");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Network error";
+      setError(
+        msg === "Failed to fetch"
+          ? "Could not reach the server — is `npm run dev` running? Use the same host you used to log in (e.g. localhost vs LAN IP)."
+          : msg
+      );
+      setUploads([]);
     } finally {
       setLoading(false);
     }
@@ -90,17 +109,26 @@ export default function StudentIntroductionUpload() {
 
       const res = await fetch("/api/admin/students-introduction", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.error || "Upload failed");
+        setError(
+          res.status === 401
+            ? "Session expired — log in again at /login"
+            : (data.error as string) || `Upload failed (${res.status})`
+        );
         return;
       }
       if (fileRef.current) fileRef.current.value = "";
       await load();
-    } catch {
-      setError("Something went wrong");
+    } catch (e) {
+      setError(
+        e instanceof Error && e.message === "Failed to fetch"
+          ? "Network error — check that the dev server is running."
+          : "Something went wrong"
+      );
     } finally {
       setUploading(false);
     }
@@ -126,6 +154,23 @@ export default function StudentIntroductionUpload() {
         matched students. After bios update, the usual instructor profile summary may run.
       </p>
 
+      {error && (
+        <p
+          role="alert"
+          style={{
+            color: "var(--danger)",
+            margin: "0 0 1rem",
+            fontSize: "0.85rem",
+            padding: "0.65rem 0.75rem",
+            borderRadius: "6px",
+            border: "1px solid var(--danger)",
+            background: "rgba(220, 53, 69, 0.06)",
+          }}
+        >
+          {error}
+        </p>
+      )}
+
       <form onSubmit={handleSubmit} style={{ marginBottom: "1.5rem" }}>
         <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
           <input
@@ -142,11 +187,6 @@ export default function StudentIntroductionUpload() {
             {uploading ? "Uploading…" : "Upload .txt"}
           </button>
         </div>
-        {error && (
-          <p style={{ color: "var(--danger)", margin: "0.5rem 0 0", fontSize: "0.85rem" }}>
-            {error}
-          </p>
-        )}
       </form>
 
       <div

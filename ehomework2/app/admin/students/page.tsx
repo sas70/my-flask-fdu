@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDb } from "@/lib/firebase-admin";
+import { getStudentProfileFlags } from "@/lib/student-profile-flags";
 import * as s from "@/lib/admin-styles";
 import AddStudentForm from "../_components/AddStudentForm";
 import BulkImportForm from "../_components/BulkImportForm";
@@ -12,11 +13,7 @@ export default async function StudentsPage() {
 
   const students = snap.docs.map((doc) => {
     const d = doc.data();
-    const bio = (d.bio || "").trim();
-    const survey = d.surveyResponses as Record<string, string> | undefined;
-    const hasSurvey =
-      !!d.surveyReady ||
-      (survey && Object.keys(survey).some((k) => String(survey[k] || "").trim()));
+    const flags = getStudentProfileFlags(d);
     return {
       id: doc.id,
       firstName: d.firstName || "",
@@ -24,9 +21,10 @@ export default async function StudentsPage() {
       username: d.username || "",
       email: d.email || "",
       documentsCount: (d.documents || []).length,
-      hasBio: bio.length > 0,
-      hasSurvey,
-      hasProfileSummary: !!(d.instructorProfileSummary && String(d.instructorProfileSummary).trim()),
+      hasBio: flags.hasBio,
+      hasSurvey: flags.hasSurvey,
+      hasProfileSummary: flags.hasProfileSummary,
+      hasIntroFromUpload: flags.hasIntroFromUpload,
     };
   });
 
@@ -60,6 +58,7 @@ export default async function StudentsPage() {
                     <th style={s.th}>Bio</th>
                     <th style={s.th}>Survey</th>
                     <th style={s.th}>AI profile</th>
+                    <th style={s.th}>Intro file</th>
                     <th style={s.th}>Docs</th>
                     <th style={s.th}></th>
                   </tr>
@@ -95,6 +94,13 @@ export default async function StudentsPage() {
                           <span style={s.badgeStyle("graded")}>ready</span>
                         ) : (
                           <span style={s.badgeStyle("pending")}>—</span>
+                        )}
+                      </td>
+                      <td style={s.td}>
+                        {st.hasIntroFromUpload ? (
+                          <span style={s.badgeStyle("transcribed")}>yes</span>
+                        ) : (
+                          <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>—</span>
                         )}
                       </td>
                       <td style={s.td}>

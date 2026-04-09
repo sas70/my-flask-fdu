@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { getDb } from "@/lib/firebase-admin";
 import * as s from "@/lib/admin-styles";
 import SubmissionFilters from "../_components/SubmissionFilters";
+import HomeworkIngestForm from "../_components/HomeworkIngestForm";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,13 @@ export default async function SubmissionsPage({
   // Get distinct weeks for the filter dropdown
   const assignmentsSnap = await db.collection("assignments").orderBy("week", "asc").get();
   const weeks = assignmentsSnap.docs.map((doc) => doc.data().week as number);
+
+  const studentsSnap = await db.collection("students").orderBy("lastName", "asc").get();
+  const ingestStudents = studentsSnap.docs.map((doc) => {
+    const d = doc.data();
+    const label = `${d.lastName || ""}, ${d.firstName || ""}`.trim();
+    return { id: doc.id, label: label || doc.id };
+  });
 
   // Build query
   let query: FirebaseFirestore.Query = db.collection("homeworkSubmissions");
@@ -51,6 +59,28 @@ export default async function SubmissionsPage({
       <h1 style={{ fontSize: "1.5rem", fontWeight: 600, marginBottom: "1.5rem" }}>
         Submissions
       </h1>
+
+      <div style={{ ...s.card, marginBottom: "1.5rem" }}>
+        <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.5rem" }}>
+          New homework submission
+        </h2>
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", margin: "0 0 1rem" }}>
+          Select a student, enter the <strong>assignment week</strong>, then add videos and/or documents (files or URLs).
+          <strong> Video URLs</strong> must point to a <strong>raw video file</strong> (e.g. .mp4)—not Yuja/Canvas/YouTube
+          player pages (those return HTML and cannot be imported). Prefer uploading the downloaded file. Everything is stored on
+          ByteScale first; the Cloud Function transcribes video, extracts documents, and grades when the rubric exists. For{" "}
+          <strong>Yuja / LMS playback</strong>, use{" "}
+          <Link href="/admin/homework-capture" style={{ color: "var(--accent)" }}>
+            Homework → Tab capture
+          </Link>{" "}
+          (segment table + pipeline status).
+        </p>
+        {ingestStudents.length > 0 ? (
+          <HomeworkIngestForm students={ingestStudents} />
+        ) : (
+          <p style={{ color: "var(--muted)", margin: 0 }}>Add students under Manage → Students before submitting homework.</p>
+        )}
+      </div>
 
       <Suspense fallback={null}>
         <SubmissionFilters weeks={weeks} />

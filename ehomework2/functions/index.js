@@ -23,6 +23,7 @@ const {
   handleStudentProfileCreated,
   handleStudentProfileUpdated,
   handleStudentsIntroductionUploadCreated,
+  handleYujaFunnyUrlsUpdated,
 } = require("@ehomework/gradeflow-shared");
 
 const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
@@ -122,4 +123,12 @@ exports.onStudentUpdated = onDocumentUpdated("students/{studentId}", async (even
     event.params.studentId,
     event.data.after.ref
   );
+});
+
+/** When `combinedTranscriptionUrl` is written on yuja_funny_urls — sync submissions / hook next steps. */
+exports.onYujaFunnyUrlsUpdated = onDocumentUpdated("yuja_funny_urls/{docId}", async (event) => {
+  const before = event.data.before.exists ? event.data.before.data() : {};
+  const after = event.data.after.data();
+  if (!after) return;
+  await handleYujaFunnyUrlsUpdated(before || {}, after, event.params.docId, event.data.after.ref);
 });

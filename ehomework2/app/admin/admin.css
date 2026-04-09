@@ -32,6 +32,8 @@
   align-items: center;
   gap: 0.5rem;
   letter-spacing: -0.02em;
+  white-space: nowrap;
+  flex-wrap: nowrap;
 }
 .admin-sidebar-brand:hover {
   text-decoration: none;

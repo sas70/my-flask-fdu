@@ -5,6 +5,8 @@ import * as s from "@/lib/admin-styles";
 import EditStudentForm from "../../_components/EditStudentForm";
 import StudentDocUpload from "../../_components/StudentDocUpload";
 import DeleteStudentButton from "../../_components/DeleteStudentButton";
+import StudentHomeworkVideos from "../../_components/StudentHomeworkVideos";
+import HomeworkIngestForm from "../../_components/HomeworkIngestForm";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +40,9 @@ export default async function StudentDetailPage({
   const submissions = subsSnap.docs
     .map((d) => {
       const data = d.data();
+      const videos = (data.videos || []) as { name?: string; url?: string }[];
+      const urls = (data.urls || []) as string[];
+      const attachments = (data.attachments || []) as { name?: string; url?: string; mimeType?: string }[];
       return {
         id: d.id,
         week: data.week,
@@ -46,9 +51,14 @@ export default async function StudentDetailPage({
         totalPossible: data.totalPossible ?? null,
         letterGrade: data.letterGrade ?? null,
         createTime: d.createTime?.toMillis() || 0,
+        videos: videos.filter((v) => v && v.url),
+        urls: urls.filter(Boolean),
+        attachments: attachments.filter((a) => a && a.url),
       };
     })
     .sort((a, b) => Number(a.week) - Number(b.week));
+
+  const rosterName = [student.firstName, student.lastName].filter(Boolean).join(" ").trim() || "Student";
 
   return (
     <>
@@ -149,6 +159,52 @@ export default async function StudentDetailPage({
           )}
         </div>
       )}
+
+      {/* Homework files (ByteScale URLs) + ingest */}
+      <div style={{ ...s.card, marginBottom: "1.5rem" }}>
+        <h2 style={{ fontSize: "1rem", fontWeight: 600, marginTop: 0, marginBottom: "0.5rem" }}>
+          Homework files
+        </h2>
+        <p style={{ color: "var(--muted)", fontSize: "0.78rem", margin: "0 0 1rem" }}>
+          Items are grouped by week. Select a video to play inline (when the browser supports the format). PDFs and text open
+          in a new tab; their text is merged with the transcript for AI grading.
+        </p>
+        <StudentHomeworkVideos
+          submissions={submissions.map((sub) => ({
+            submissionId: sub.id,
+            week: sub.week,
+            status: sub.status,
+            videos: sub.videos.map((v) => ({ name: v.name, url: v.url! })),
+            urls: sub.urls,
+            attachments: sub.attachments.map((a) => ({
+              name: a.name,
+              url: a.url!,
+              mimeType: a.mimeType,
+            })),
+          }))}
+        />
+        <div style={{ marginTop: "1.5rem", paddingTop: "1.25rem", borderTop: "1px solid var(--border)" }}>
+          <h3 style={{ fontSize: "0.9rem", fontWeight: 600, marginTop: 0, marginBottom: "0.75rem" }}>
+            Submit homework (admin)
+          </h3>
+          <HomeworkIngestForm studentId={id} defaultStudentName={rosterName} />
+        </div>
+        <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid var(--border)" }}>
+          <h3 style={{ fontSize: "0.9rem", fontWeight: 600, marginTop: 0, marginBottom: "0.5rem" }}>
+            Tab capture (Yuja / LMS)
+          </h3>
+          <p style={{ color: "var(--muted)", fontSize: "0.78rem", margin: "0 0 0.75rem" }}>
+            Open the dedicated workspace for segment status, ByteScale links, and pipeline progress. This student is pre-selectable
+            via the link below.
+          </p>
+          <Link
+            href={`/admin/homework-capture?student=${encodeURIComponent(id)}`}
+            style={{ fontSize: "0.88rem", color: "var(--accent)", fontWeight: 500 }}
+          >
+            Open tab capture for this student →
+          </Link>
+        </div>
+      </div>
 
       {/* Submissions history */}
       <div style={{ ...s.card, marginBottom: "1.5rem" }}>
