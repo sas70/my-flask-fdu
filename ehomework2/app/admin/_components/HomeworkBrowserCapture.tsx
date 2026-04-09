@@ -57,31 +57,48 @@ function pickMime(): string | undefined {
   return "video/webm";
 }
 
+function formatMsClock(ms: number) {
+  const totalS = Math.floor(ms / 1000);
+  const m = Math.floor(totalS / 60);
+  const r = totalS % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
 function formatSegmentTimes(index: number, chunkMs: number) {
   const startMs = index * chunkMs;
   const endMs = (index + 1) * chunkMs;
-  const fmt = (ms: number) => {
-    const totalS = Math.floor(ms / 1000);
-    const m = Math.floor(totalS / 60);
-    const r = totalS % 60;
-    return `${m}:${String(r).padStart(2, "0")}`;
-  };
   const startMinF = startMs / 60000;
   const endMinF = endMs / 60000;
   return {
-    timeRange: `${fmt(startMs)}–${fmt(endMs)}`,
+    timeRange: `${formatMsClock(startMs)}–${formatMsClock(endMs)}`,
     minuteLabel: `≈ ${startMinF.toFixed(2)}–${endMinF.toFixed(2)} min from start`,
   };
 }
 
-function segmentsFromResumeChunks(
-  chunks: Array<{ chunkIndex: number; url: string }>,
-  ms: number
-): CaptureSegment[] {
+function formatSegmentTimesFromOffsets(startMs: number, endMs: number) {
+  const startMinF = startMs / 60000;
+  const endMinF = endMs / 60000;
+  return {
+    timeRange: `${formatMsClock(startMs)}–${formatMsClock(endMs)}`,
+    minuteLabel: `≈ ${startMinF.toFixed(2)}–${endMinF.toFixed(2)} min from start`,
+  };
+}
+
+type ResumeChunkRow = {
+  chunkIndex: number;
+  url: string;
+  startOffsetMs?: number;
+  endOffsetMs?: number;
+};
+
+function segmentsFromResumeChunks(chunks: ResumeChunkRow[], ms: number): CaptureSegment[] {
   return [...chunks]
     .sort((a, b) => a.chunkIndex - b.chunkIndex)
     .map((c) => {
-      const t = formatSegmentTimes(c.chunkIndex, ms);
+      const t =
+        typeof c.startOffsetMs === "number" && typeof c.endOffsetMs === "number"
+          ? formatSegmentTimesFromOffsets(c.startOffsetMs, c.endOffsetMs)
+          : formatSegmentTimes(c.chunkIndex, ms);
       return {
         index: c.chunkIndex,
         timeRange: t.timeRange,

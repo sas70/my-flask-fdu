@@ -24,56 +24,181 @@ Include:
 
 Format the transcription clearly with paragraphs. Do NOT summarize — provide the full word-for-word transcription.`;
 
-async function transcribeWithGemini(videoUrl, mimeType = "video/mp4") {
-  const customPrompt = await getPrompt("videoTranscription");
-  const promptText = customPrompt || DEFAULT_TRANSCRIPTION_PROMPT;
+/** Strip codec/parameters so Gemini accepts e.g. video/webm (not video/webm;codecs=vp9,opus). */
+function normalizeGeminiVideoMime(mimeType) {
+  const raw = mimeType && String(mimeType).trim() ? String(mimeType).trim() : "video/mp4";
+  const base = raw.split(";")[0].trim().toLowerCase();
+  return base || "video/mp4";
+}
 
-  const mt = mimeType && String(mimeType).trim() ? String(mimeType).trim() : "video/mp4";
+/** Below this size, send video as inline base64 (tab-capture chunks are typically under 5 MB). */
+const GEMINI_INLINE_VIDEO_MAX_BYTES = 18 * 1024 * 1024;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TRANSCRIPTION_MODEL}:generateContent?key=${GOOGLE_API_KEY()}`;
+/**
+ * Upload bytes via Gemini Files API (resumable) and return a file URI for generateContent.
+ * @param {Buffer} buf
+ * @param {string} mimeType
+ * @param {string} apiKey
+ */
+async function uploadVideoBytesToGeminiFiles(buf, mimeType, apiKey) {
+  const numBytes = buf.length;
+  const base = "https://generativelanguage.googleapis.com/upload/v1beta/files";
+  const startUrl = `${base}?key=${encodeURIComponent(apiKey)}`;
+  const startRes = await fetch(startUrl, {
+    method: "POST",
+    headers: {
+      "X-Goog-Upload-Protocol": "resumable",
+      "X-Goog-Upload-Command": "start",
+      "X-Goog-Upload-Header-Content-Length": String(numBytes),
+      "X-Goog-Upload-Header-Content-Type": mimeType,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      file: { displayName: `transcribe_${Date.now()}.bin` },
+    }),
+  });
+  if (!startRes.ok) {
+    const t = await startRes.text();
+    throw new Error(`Gemini Files API start failed (${startRes.status}): ${t}`);
+  }
+  const uploadUrl = startRes.headers.get("x-goog-upload-url");
+  if (!uploadUrl) {
+    throw new Error("Gemini Files API: missing x-goog-upload-url");
+  }
+  const uploadRes = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(numBytes),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: buf,
+  });
+  if (!uploadRes.ok) {
+    const t = await uploadRes.text();
+    throw new Error(`Gemini Files API upload failed (${uploadRes.status}): ${t}`);
+  }
+  const uploadJson = await uploadRes.json();
+  const name = uploadJson.file?.name;
+  if (!name) {
+    throw new Error("Gemini Files API: missing file.name in upload response");
+  }
+  let fileMeta = uploadJson.file;
+  for (let i = 0; i < 180; i++) {
+    if (fileMeta?.state === "ACTIVE" && fileMeta?.uri) {
+      return fileMeta.uri;
+    }
+    if (fileMeta?.state === "FAILED") {
+      throw new Error("Gemini Files API: video processing FAILED");
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+    const g = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/${name}?key=${encodeURIComponent(apiKey)}`
+    );
+    if (!g.ok) {
+      const t = await g.text();
+      throw new Error(`Gemini Files API get failed (${g.status}): ${t}`);
+    }
+    fileMeta = (await g.json()).file || {};
+  }
+  throw new Error("Gemini Files API: timeout waiting for ACTIVE");
+}
 
+async function geminiGenerateTranscription(parts, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TRANSCRIPTION_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              fileData: {
-                mimeType: mt,
-                fileUri: videoUrl,
-              },
-            },
-            {
-              text: promptText,
-            },
-          ],
-        },
-      ],
+      contents: [{ parts }],
       generationConfig: {
         maxOutputTokens: 16000,
         temperature: 0.1,
       },
     }),
   });
-
   if (!response.ok) {
     const err = await response.text();
     throw new Error(`Gemini API error (${response.status}): ${err}`);
   }
-
   const data = await response.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
   if (!text) {
     throw new Error("Gemini returned no transcription text");
   }
-
   return text;
 }
 
+async function transcribeWithGemini(videoUrl, mimeType = "video/mp4") {
+  const customPrompt = await getPrompt("videoTranscription");
+  const promptText = customPrompt || DEFAULT_TRANSCRIPTION_PROMPT;
+  const mt = normalizeGeminiVideoMime(mimeType);
+  const apiKey = GOOGLE_API_KEY();
+  if (!apiKey) {
+    throw new Error("GOOGLE_API_KEY is not set");
+  }
+
+  const videoRes = await fetch(videoUrl);
+  if (!videoRes.ok) {
+    throw new Error(`Failed to fetch video URL (${videoRes.status})`);
+  }
+  const arrayBuffer = await videoRes.arrayBuffer();
+  const buf = Buffer.from(arrayBuffer);
+  if (buf.length === 0) {
+    throw new Error("Video download returned empty body");
+  }
+
+  let parts;
+  if (buf.length <= GEMINI_INLINE_VIDEO_MAX_BYTES) {
+    parts = [
+      {
+        inlineData: {
+          mimeType: mt,
+          data: buf.toString("base64"),
+        },
+      },
+      { text: promptText },
+    ];
+  } else {
+    const fileUri = await uploadVideoBytesToGeminiFiles(buf, mt, apiKey);
+    parts = [
+      {
+        fileData: {
+          mimeType: mt,
+          fileUri,
+        },
+      },
+      { text: promptText },
+    ];
+  }
+
+  return geminiGenerateTranscription(parts, apiKey);
+}
+
 const GRADING_INPUT_MAX = 80000;
+
+/**
+ * Markdown for the video walkthrough section when using a pre-merged transcript URL.
+ * @param {string} innerUtf8 Raw body only (e.g. tab-capture merge output). Do not include the outer "## Video walkthrough…" headings — those are added here so they are not duplicated when fetching.
+ * @returns {string}
+ */
+function buildPremergedVideoSectionMarkdown(innerUtf8) {
+  const inner = String(innerUtf8 ?? "");
+  return (
+    "## Video walkthrough transcription(s)\n\n### Merged segment transcripts\n\n" + inner
+  );
+}
+
+/**
+ * Fetch pre-merged transcript bytes from ByteScale (or any HTTPS URL) and wrap with the canonical video-walkthrough headings.
+ * @param {string} premergedUrl
+ * @returns {Promise<string>} Full markdown section for the video part of the grading corpus
+ */
+async function buildPremergedVideoSectionFromUrl(premergedUrl) {
+  const buf = await fetchUrlBytes(String(premergedUrl).trim());
+  const text = buf.toString("utf8");
+  return buildPremergedVideoSectionMarkdown(text);
+}
 
 /**
  * Video transcription (Gemini) + PDF/plain-text extraction from ByteScale URLs.
@@ -106,11 +231,7 @@ async function buildCombinedGradingInput(submission, submissionId) {
     console.log(
       `[hw submission] using premerged walkthrough transcript (skip per-video Gemini) submissionId=${submissionId}`
     );
-    const buf = await fetchUrlBytes(String(premergedUrl).trim());
-    const text = buf.toString("utf8");
-    sections.push(
-      "## Video walkthrough transcription(s)\n\n### Merged segment transcripts\n\n" + text
-    );
+    sections.push(await buildPremergedVideoSectionFromUrl(String(premergedUrl).trim()));
   } else if (videoParts.length > 0) {
     const transcriptions = [];
     for (let i = 0; i < videoParts.length; i++) {
@@ -645,6 +766,8 @@ async function handleSubmissionUpdated(before, after, submissionId, afterRef) {
 
 module.exports = {
   transcribeWithGemini,
+  buildPremergedVideoSectionMarkdown,
+  buildPremergedVideoSectionFromUrl,
   buildCombinedGradingInput,
   generateRubricWithClaude,
   maybeGrade,

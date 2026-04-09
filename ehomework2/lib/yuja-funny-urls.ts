@@ -1,6 +1,9 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { normalizeHomeworkCaptureReferenceUrl } from "@/lib/homework-capture-reference-url";
 import { sessionRef } from "@/lib/homework-capture-server";
+import { referencePlaybackUrlKeyToYujaDocId } from "@/lib/yuja-funny-urls-id";
+
+export { referencePlaybackUrlKeyToYujaDocId };
 
 /** Firestore collection: one doc per normalized Yuja / LMS video URL. */
 export const YUJA_FUNNY_URLS = "yuja_funny_urls";
@@ -65,6 +68,8 @@ export type YujaSegmentRecord = {
 
 /**
  * Find or create the `yuja_funny_urls` doc for this video URL (stable key).
+ * New docs use a deterministic doc id (SHA-256 hex of `referencePlaybackUrlKey`).
+ * Legacy random Firestore ids are still resolved via `referencePlaybackUrlKey` query.
  */
 export async function getOrCreateYujaFunnyDoc(
   db: Firestore,
@@ -76,18 +81,28 @@ export async function getOrCreateYujaFunnyDoc(
     throw new Error("Invalid reference URL for Yuja doc");
   }
 
-  const snap = await db
-    .collection(YUJA_FUNNY_URLS)
-    .where("referencePlaybackUrlKey", "==", key)
-    .limit(1)
-    .get();
+  const coll = db.collection(YUJA_FUNNY_URLS);
+  const detId = referencePlaybackUrlKeyToYujaDocId(key);
+  const detRef = coll.doc(detId);
+  const detSnap = await detRef.get();
 
-  if (!snap.empty) {
-    const doc = snap.docs[0];
+  if (detSnap.exists) {
+    const stored = detSnap.data()?.referencePlaybackUrlKey;
+    if (stored !== key) {
+      throw new Error(
+        `yuja_funny_urls deterministic id collision: doc ${detId} key mismatch`
+      );
+    }
+    return { docId: detId, created: false };
+  }
+
+  const legacySnap = await coll.where("referencePlaybackUrlKey", "==", key).limit(1).get();
+  if (!legacySnap.empty) {
+    const doc = legacySnap.docs[0];
     return { docId: doc.id, created: false };
   }
 
-  const ref = await db.collection(YUJA_FUNNY_URLS).add({
+  await detRef.set({
     referencePlaybackUrl: trimmed,
     referencePlaybackUrlKey: key,
     segments: {},
@@ -95,7 +110,7 @@ export async function getOrCreateYujaFunnyDoc(
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  return { docId: ref.id, created: true };
+  return { docId: detId, created: true };
 }
 
 /**
@@ -196,6 +211,11 @@ export type MergeYujaSegmentOptions = {
 /**
  * Concatenate segment transcript .txt files in chunk order; upload combined file to ByteScale.
  * Omits segments without a transcript if the **minimum transcript count** (ceil(n × ratio)) is still met.
+ *
+ * **Contract:** The uploaded `.txt` is **inner body only** (merge note + segment blocks). Cloud Functions add the
+ * outer "## Video walkthrough transcription(s)" / "### Merged segment transcripts" wrapper via
+ * `buildPremergedVideoSectionFromUrl` in `gradeFlow.js` when building the full grading corpus — do not duplicate
+ * those headings in this file content.
  */
 export async function mergeYujaSegmentTranscripts(
   db: Firestore,

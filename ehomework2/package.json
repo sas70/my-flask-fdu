@@ -9,6 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
     "predeploy-functions": "node scripts/predeploy-functions.js",
     "serve": "firebase emulators:start --only functions,firestore",
     "deploy:functions": "firebase deploy --only functions",
@@ -27,6 +28,7 @@
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.17.0",
     "eslint-config-next": "^15.1.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
   }
 }

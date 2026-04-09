@@ -2,8 +2,37 @@ import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "@/lib/firebase-admin";
 import { uploadBinaryToBytescale } from "@/lib/bytescale-binary";
+import { getHomeworkCaptureChunkMs } from "@/lib/homework-capture-constants";
 import { chunksCollection, sessionRef } from "@/lib/homework-capture-server";
 import { ensureSessionYujaFunnyDoc, writeYujaSegmentChunk } from "@/lib/yuja-funny-urls";
+
+function parseOptionalDurationMs(raw: FormDataEntryValue | null): number | undefined {
+  if (raw == null || raw === "") return undefined;
+  const n = typeof raw === "string" ? Number(raw) : Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 3_600_000) return undefined;
+  return Math.round(n);
+}
+
+function computeChunkTimeline(
+  chunkIndex: number,
+  chunkLengthNominalMs: number,
+  durationOverrideMs?: number
+): {
+  startOffsetMs: number;
+  endOffsetMs: number;
+  durationMs: number;
+  durationSource: "nominal" | "client";
+} {
+  const startOffsetMs = chunkIndex * chunkLengthNominalMs;
+  const durationSource =
+    typeof durationOverrideMs === "number" && durationOverrideMs > 0 ? "client" : "nominal";
+  const durationMs =
+    durationSource === "client" && typeof durationOverrideMs === "number"
+      ? durationOverrideMs
+      : chunkLengthNominalMs;
+  const endOffsetMs = startOffsetMs + durationMs;
+  return { startOffsetMs, endOffsetMs, durationMs, durationSource };
+}
 
 export const maxDuration = 60;
 
@@ -59,12 +88,21 @@ export async function POST(request: NextRequest) {
     const prefix = `homework/capture/${sessionId}`;
     const fileUrl = await uploadBinaryToBytescale(buf, `${prefix}_${name}`, mime);
 
+    const chunkLengthNominalMs = getHomeworkCaptureChunkMs();
+    const durationOverride = parseOptionalDurationMs(formData.get("durationMs"));
+    const timeline = computeChunkTimeline(chunkIndex, chunkLengthNominalMs, durationOverride);
+
     await chunksCollection(db, sessionId).doc(String(chunkIndex)).set({
       chunkIndex,
       url: fileUrl,
       name,
       mimeType: mime,
       uploadedAt: FieldValue.serverTimestamp(),
+      startOffsetMs: timeline.startOffsetMs,
+      endOffsetMs: timeline.endOffsetMs,
+      durationMs: timeline.durationMs,
+      chunkLengthNominalMs,
+      durationSource: timeline.durationSource,
     });
     await sessionRef(db, sessionId).update({ updatedAt: FieldValue.serverTimestamp() });
 
