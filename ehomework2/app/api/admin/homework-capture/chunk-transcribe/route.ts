@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-require-imports -- @ehomework/gradeflow-shared is CommonJS */
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/firebase-admin";
-import { chunksCollection, sessionRef } from "@/lib/homework-capture-server";
 import {
-  ensureSessionYujaFunnyDoc,
+  loadYujaDocById,
   writeYujaSegmentTranscript,
   writeYujaSegmentTranscriptFailed,
+  yujaDocIdForUrl,
 } from "@/lib/yuja-funny-urls";
 
 export const maxDuration = 300;
@@ -19,7 +19,11 @@ const {
 };
 
 /**
- * Transcribe one uploaded WebM chunk (Gemini), upload .txt to ByteScale, update yuja_funny_urls segment.
+ * Transcribe one recorded chunk (Gemini) and write the .txt URL to the yuja doc.
+ *
+ * Body: { url, chunkIndex } OR { yujaFunnyUrlsDocId, chunkIndex }
+ * The chunk must already have a `chunkUrl` stored (i.e. POST /chunk ran first).
+ * This endpoint is safe to call again on a failed or completed segment — it re-runs Gemini.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -30,64 +34,68 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = (await request.json()) as { sessionId?: string; chunkIndex?: number };
-    const sessionId = String(body.sessionId || "").trim();
+    const body = (await request.json()) as {
+      url?: string;
+      yujaFunnyUrlsDocId?: string;
+      chunkIndex?: number;
+    };
+    const referenceUrl = String(body.url || "").trim();
+    const bodyDocId = String(body.yujaFunnyUrlsDocId || "").trim();
     const chunkIndex = Number(body.chunkIndex);
 
-    if (!sessionId) {
-      return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+    if (!referenceUrl && !bodyDocId) {
+      return NextResponse.json({ error: "url or yujaFunnyUrlsDocId is required" }, { status: 400 });
     }
     if (!Number.isInteger(chunkIndex) || chunkIndex < 0) {
       return NextResponse.json({ error: "chunkIndex must be a non-negative integer" }, { status: 400 });
     }
 
-    const db = getDb();
-    const sess = await sessionRef(db, sessionId).get();
-    if (!sess.exists) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
-    }
-    const sessData = sess.data() as { status?: string };
-    if (sessData.status !== "open") {
-      return NextResponse.json({ error: "Session is not open" }, { status: 409 });
+    let docId = bodyDocId;
+    if (!docId) {
+      try {
+        docId = yujaDocIdForUrl(referenceUrl).docId;
+      } catch {
+        return NextResponse.json({ error: "Invalid reference URL" }, { status: 400 });
+      }
     }
 
-    const yujaId = await ensureSessionYujaFunnyDoc(db, sessionId);
-    if (!yujaId) {
+    const db = getDb();
+    const data = await loadYujaDocById(db, docId);
+    if (!data) {
+      return NextResponse.json({ error: "yuja_funny_urls doc not found for this URL" }, { status: 404 });
+    }
+
+    const seg = data.segments?.[String(chunkIndex)];
+    if (!seg?.chunkUrl) {
       return NextResponse.json(
-        { error: "No reference video URL on this session — segment transcripts are not tracked in yuja_funny_urls." },
+        { error: `Chunk ${chunkIndex} has no uploaded chunkUrl yet.` },
         { status: 400 }
       );
     }
 
-    const chunkSnap = await chunksCollection(db, sessionId).doc(String(chunkIndex)).get();
-    if (!chunkSnap.exists) {
-      return NextResponse.json({ error: "Chunk not found for this session" }, { status: 404 });
-    }
-    const ch = chunkSnap.data() as { url?: string; mimeType?: string; name?: string };
-    const url = ch.url;
-    if (!url) {
-      return NextResponse.json({ error: "Chunk has no ByteScale url" }, { status: 400 });
-    }
-    const mime = ch.mimeType || "video/webm";
+    const mime = seg.chunkMimeType || "video/webm";
 
     let text: string;
     try {
-      text = await transcribeWithGemini(url, mime);
+      text = await transcribeWithGemini(seg.chunkUrl, mime);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      await writeYujaSegmentTranscriptFailed(db, yujaId, chunkIndex, msg);
-      return NextResponse.json({ error: msg, chunkIndex, transcriptionStatus: "failed" }, { status: 502 });
+      await writeYujaSegmentTranscriptFailed(db, docId, chunkIndex, msg);
+      return NextResponse.json(
+        { error: msg, chunkIndex, transcriptionStatus: "failed" },
+        { status: 502 }
+      );
     }
 
-    const fileName = `yuja_funny_urls/${yujaId}/segment_${String(chunkIndex).padStart(4, "0")}.txt`;
+    const fileName = `yuja_funny_urls/${docId}/segment_${String(chunkIndex).padStart(4, "0")}.txt`;
     const transcriptUrl = await uploadTextToBytescale(text, fileName);
-    await writeYujaSegmentTranscript(db, yujaId, chunkIndex, transcriptUrl);
+    await writeYujaSegmentTranscript(db, docId, chunkIndex, transcriptUrl);
 
     return NextResponse.json({
       ok: true,
       chunkIndex,
       transcriptUrl,
-      yujaFunnyUrlsDocId: yujaId,
+      yujaFunnyUrlsDocId: docId,
     });
   } catch (e) {
     console.error("[homework-capture/chunk-transcribe]", e);

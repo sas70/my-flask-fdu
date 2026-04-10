@@ -4,7 +4,6 @@ const discussions = require("./discussions");
 const prompts = require("./prompts");
 const studentSurvey = require("./studentSurvey");
 const studentIntroductions = require("./studentIntroductions");
-const yujaFunnyUrls = require("./yujaFunnyUrls");
 
 module.exports = {
   ...bytescale,
@@ -13,5 +12,4 @@ module.exports = {
   ...prompts,
   ...studentSurvey,
   ...studentIntroductions,
-  ...yujaFunnyUrls,
 };

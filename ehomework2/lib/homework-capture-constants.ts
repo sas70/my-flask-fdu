@@ -1,9 +1,3 @@
-/** Firestore collection for in-progress browser tab captures (admin-only). */
-export const HOMEWORK_CAPTURE_SESSIONS = "homeworkCaptureSessions";
-
-/** Subcollection under each session: one doc per chunk index. */
-export const HOMEWORK_CAPTURE_CHUNKS_SUB = "chunks";
-
 /**
  * MediaRecorder timeslice (ms). Default 1 minute — smaller WebM payloads per request (Vercel ~4.5 MB body limit).
  * Override with NEXT_PUBLIC_HOMEWORK_CAPTURE_CHUNK_MS (15000–600000).

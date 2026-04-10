@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "@/lib/firebase-admin";
 import { uploadBinaryToBytescale } from "@/lib/bytescale-binary";
 import { getHomeworkCaptureChunkMs } from "@/lib/homework-capture-constants";
-import { chunksCollection, sessionRef } from "@/lib/homework-capture-server";
-import { ensureSessionYujaFunnyDoc, writeYujaSegmentChunk } from "@/lib/yuja-funny-urls";
+import {
+  getOrCreateYujaDoc,
+  writeYujaSegmentChunk,
+  yujaDocIdForUrl,
+} from "@/lib/yuja-funny-urls";
 
 function parseOptionalDurationMs(raw: FormDataEntryValue | null): number | undefined {
   if (raw == null || raw === "") return undefined;
@@ -40,19 +42,24 @@ export const maxDuration = 60;
 const MAX_CHUNK_BYTES = process.env.VERCEL ? 4_200_000 : 32 * 1024 * 1024;
 
 /**
- * Uploads one recorded chunk to ByteScale and stores metadata under the session.
+ * Upload one recorded chunk. The URL is the identity; no session concept.
+ *
+ * Form fields:
+ *   - url (required): reference playback URL
+ *   - chunkIndex (required): non-negative integer
+ *   - file (required): the WebM blob
+ *   - durationMs (optional): client-measured chunk duration
  */
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const sessionId = String(formData.get("sessionId") || "").trim();
+    const referenceUrl = String(formData.get("url") || "").trim();
     const indexRaw = formData.get("chunkIndex");
-    const chunkIndex =
-      typeof indexRaw === "string" ? Number(indexRaw) : Number(indexRaw ?? NaN);
+    const chunkIndex = typeof indexRaw === "string" ? Number(indexRaw) : Number(indexRaw ?? NaN);
     const file = formData.get("file");
 
-    if (!sessionId) {
-      return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+    if (!referenceUrl) {
+      return NextResponse.json({ error: "url is required" }, { status: 400 });
     }
     if (!Number.isInteger(chunkIndex) || chunkIndex < 0) {
       return NextResponse.json({ error: "chunkIndex must be a non-negative integer" }, { status: 400 });
@@ -73,49 +80,45 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let docId: string;
+    try {
+      docId = yujaDocIdForUrl(referenceUrl).docId;
+    } catch {
+      return NextResponse.json({ error: "Invalid reference URL" }, { status: 400 });
+    }
+
     const db = getDb();
-    const sess = await sessionRef(db, sessionId).get();
-    if (!sess.exists) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
-    }
-    if (sess.data()?.status !== "open") {
-      return NextResponse.json({ error: "Session is not open for uploads" }, { status: 409 });
-    }
+    const chunkLengthNominalMs = getHomeworkCaptureChunkMs();
+
+    // Create the yuja doc lazily on first chunk upload.
+    await getOrCreateYujaDoc(db, referenceUrl, { chunkMs: chunkLengthNominalMs });
 
     const buf = Buffer.from(await file.arrayBuffer());
     const mime = file.type || "video/webm";
-    const name = `capture_${sessionId}_part${String(chunkIndex).padStart(4, "0")}.webm`;
-    const prefix = `homework/capture/${sessionId}`;
+    const name = `capture_${docId.slice(0, 12)}_part${String(chunkIndex).padStart(4, "0")}.webm`;
+    const prefix = `homework/capture/${docId}`;
     const fileUrl = await uploadBinaryToBytescale(buf, `${prefix}_${name}`, mime);
 
-    const chunkLengthNominalMs = getHomeworkCaptureChunkMs();
     const durationOverride = parseOptionalDurationMs(formData.get("durationMs"));
     const timeline = computeChunkTimeline(chunkIndex, chunkLengthNominalMs, durationOverride);
 
-    await chunksCollection(db, sessionId).doc(String(chunkIndex)).set({
-      chunkIndex,
-      url: fileUrl,
-      name,
-      mimeType: mime,
-      uploadedAt: FieldValue.serverTimestamp(),
+    await writeYujaSegmentChunk(db, docId, chunkIndex, {
+      chunkUrl: fileUrl,
+      chunkMimeType: mime,
+      chunkName: name,
       startOffsetMs: timeline.startOffsetMs,
       endOffsetMs: timeline.endOffsetMs,
       durationMs: timeline.durationMs,
       chunkLengthNominalMs,
       durationSource: timeline.durationSource,
     });
-    await sessionRef(db, sessionId).update({ updatedAt: FieldValue.serverTimestamp() });
 
-    try {
-      const yujaId = await ensureSessionYujaFunnyDoc(db, sessionId);
-      if (yujaId) {
-        await writeYujaSegmentChunk(db, yujaId, chunkIndex, fileUrl, mime);
-      }
-    } catch (yujaErr) {
-      console.error("[homework-capture/chunk] yuja_funny_urls update", yujaErr);
-    }
-
-    return NextResponse.json({ ok: true, chunkIndex, url: fileUrl });
+    return NextResponse.json({
+      ok: true,
+      yujaFunnyUrlsDocId: docId,
+      chunkIndex,
+      url: fileUrl,
+    });
   } catch (e) {
     console.error("[homework-capture/chunk]", e);
     return NextResponse.json(

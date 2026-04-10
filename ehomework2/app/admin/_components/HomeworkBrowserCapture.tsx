@@ -23,6 +23,7 @@ type Props =
     };
 
 type SegmentUploadStatus = "uploading" | "uploaded" | "failed";
+type TranscriptStatus = "" | "pending" | "complete" | "failed";
 
 type CaptureSegment = {
   index: number;
@@ -31,8 +32,8 @@ type CaptureSegment = {
   uploadStatus: SegmentUploadStatus;
   uploadError?: string;
   byteScaleUrl?: string;
-  /** From Firestore yuja_funny_urls polling */
-  transcriptionStatus?: string;
+  transcriptionStatus: TranscriptStatus;
+  transcriptionError?: string;
   transcriptUrl?: string;
   nextStep: string;
 };
@@ -41,10 +42,23 @@ type YujaProgressState = {
   totalChunks: number;
   chunksWithMedia: number;
   chunksTranscribed: number;
+  chunksFailed: number;
   minRequiredTranscripts: number;
   transcribeRatio: number;
   mergeReady: boolean;
   combinedTranscriptionUrl: string | null;
+  failedChunkIndices: number[];
+  missingChunkIndices: number[];
+};
+
+type YujaSegmentApi = {
+  chunkUrl?: string;
+  chunkMimeType?: string;
+  transcriptUrl?: string;
+  transcriptionStatus?: string;
+  transcriptionError?: string;
+  startOffsetMs?: number;
+  endOffsetMs?: number;
 };
 
 function pickMime(): string | undefined {
@@ -84,30 +98,57 @@ function formatSegmentTimesFromOffsets(startMs: number, endMs: number) {
   };
 }
 
-type ResumeChunkRow = {
-  chunkIndex: number;
-  url: string;
-  startOffsetMs?: number;
-  endOffsetMs?: number;
-};
+function segmentsFromYujaApi(
+  apiSegments: Record<string, YujaSegmentApi>,
+  totalChunks: number,
+  chunkMs: number
+): CaptureSegment[] {
+  const rows: CaptureSegment[] = [];
+  for (let i = 0; i < totalChunks; i++) {
+    const seg = apiSegments[String(i)] || {};
+    const t =
+      typeof seg.startOffsetMs === "number" && typeof seg.endOffsetMs === "number"
+        ? formatSegmentTimesFromOffsets(seg.startOffsetMs, seg.endOffsetMs)
+        : formatSegmentTimes(i, chunkMs);
 
-function segmentsFromResumeChunks(chunks: ResumeChunkRow[], ms: number): CaptureSegment[] {
-  return [...chunks]
-    .sort((a, b) => a.chunkIndex - b.chunkIndex)
-    .map((c) => {
-      const t =
-        typeof c.startOffsetMs === "number" && typeof c.endOffsetMs === "number"
-          ? formatSegmentTimesFromOffsets(c.startOffsetMs, c.endOffsetMs)
-          : formatSegmentTimes(c.chunkIndex, ms);
-      return {
-        index: c.chunkIndex,
-        timeRange: t.timeRange,
-        minuteLabel: t.minuteLabel,
-        uploadStatus: "uploaded" as const,
-        byteScaleUrl: c.url,
-        nextStep: "Resumed from Firestore — continue recording or finalize",
-      };
+    let uploadStatus: SegmentUploadStatus = "uploaded";
+    let nextStep = "Segment on ByteScale";
+    if (!seg.chunkUrl) {
+      uploadStatus = "failed";
+      nextStep = "Missing chunk — re-record this segment";
+    }
+
+    const rawStatus = (seg.transcriptionStatus || "") as string;
+    const transcriptionStatus: TranscriptStatus =
+      rawStatus === "complete" || rawStatus === "pending" || rawStatus === "failed"
+        ? rawStatus
+        : "";
+
+    if (seg.chunkUrl) {
+      if (transcriptionStatus === "complete" && seg.transcriptUrl) {
+        nextStep = "Transcribed ✓";
+      } else if (transcriptionStatus === "pending") {
+        nextStep = "Transcribing…";
+      } else if (transcriptionStatus === "failed") {
+        nextStep = `Transcription failed — retry`;
+      } else {
+        nextStep = "Awaiting transcription";
+      }
+    }
+
+    rows.push({
+      index: i,
+      timeRange: t.timeRange,
+      minuteLabel: t.minuteLabel,
+      uploadStatus,
+      byteScaleUrl: seg.chunkUrl,
+      transcriptionStatus,
+      transcriptionError: seg.transcriptionError,
+      transcriptUrl: seg.transcriptUrl,
+      nextStep,
     });
+  }
+  return rows;
 }
 
 export default function HomeworkBrowserCapture(props: Props) {
@@ -120,7 +161,7 @@ export default function HomeworkBrowserCapture(props: Props) {
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [week, setWeek] = useState("");
   const [referenceUrl, setReferenceUrl] = useState("");
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [yujaDocId, setYujaDocId] = useState<string | null>(null);
   const [chunkMs, setChunkMs] = useState(getHomeworkCaptureChunkMs());
 
   const [recording, setRecording] = useState(false);
@@ -128,8 +169,8 @@ export default function HomeworkBrowserCapture(props: Props) {
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [loadingFinalize, setLoadingFinalize] = useState(false);
-  const [startFreshSession, setStartFreshSession] = useState(false);
-  const [loadingResume, setLoadingResume] = useState(false);
+  const [loadingLookup, setLoadingLookup] = useState(false);
+  const [loadingRetry, setLoadingRetry] = useState(false);
   const [yujaProgress, setYujaProgress] = useState<YujaProgressState | null>(null);
 
   const [lastSubmissionId, setLastSubmissionId] = useState<string | null>(null);
@@ -144,7 +185,11 @@ export default function HomeworkBrowserCapture(props: Props) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkIndexRef = useRef(0);
-  const sessionIdRef = useRef<string | null>(null);
+  const referenceUrlRef = useRef("");
+
+  useEffect(() => {
+    referenceUrlRef.current = referenceUrl;
+  }, [referenceUrl]);
 
   useEffect(() => {
     if (initialStudentId && roster?.some((x) => x.id === initialStudentId)) {
@@ -152,98 +197,120 @@ export default function HomeworkBrowserCapture(props: Props) {
     }
   }, [initialStudentId, roster]);
 
-  /** Poll Firestore-backed Yuja segment + merge readiness while a session with reference URL is active. */
-  useEffect(() => {
-    const sid = sessionId;
-    if (!sid || !referenceUrl.trim()) {
-      setYujaProgress(null);
-      return;
-    }
-    let cancelled = false;
-    const tick = async () => {
+  /** Load yuja doc state for the current URL (no recording, no create). */
+  const loadYujaState = useCallback(
+    async (url: string, opts?: { create?: boolean; silent?: boolean }): Promise<boolean> => {
+      const u = url.trim();
+      if (!u) {
+        setYujaDocId(null);
+        setSegments([]);
+        setYujaProgress(null);
+        return false;
+      }
+      if (!opts?.silent) {
+        setLoadingLookup(true);
+        setError("");
+      }
       try {
-        const res = await fetch(
-          `/api/admin/homework-capture/yuja-status?sessionId=${encodeURIComponent(sid)}`,
-          { credentials: "include" }
-        );
+        const qs = new URLSearchParams({ url: u });
+        if (opts?.create) qs.set("create", "1");
+        const res = await fetch(`/api/admin/homework-capture/yuja-state?${qs}`, {
+          credentials: "include",
+        });
         const data = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
-          progress?: YujaProgressState | null;
-          segments?: Record<
-            string,
-            { transcriptUrl?: string; transcriptionStatus?: string; transcriptionError?: string }
-          >;
+          error?: string;
+          yujaFunnyUrlsDocId?: string;
+          exists?: boolean;
+          chunkMs?: number;
+          segments?: Record<string, YujaSegmentApi>;
+          progress?: YujaProgressState;
+          nextChunkIndex?: number;
         };
-        if (cancelled || !data.ok || !data.progress) return;
-        setYujaProgress(data.progress);
-        if (data.segments) {
-          setSegments((prev) =>
-            prev.map((row) => {
-              const seg = data.segments![String(row.index)];
-              if (!seg) return row;
-              const st = seg.transcriptionStatus || "";
-              let nextFromYuja = row.nextStep;
-              if (row.uploadStatus !== "uploading") {
-                if (st === "complete" && seg.transcriptUrl) {
-                  nextFromYuja = "Segment transcribed — finalize when done recording";
-                } else if (st === "pending") {
-                  nextFromYuja = "Transcribing segment (Yuja pipeline)…";
-                } else if (st === "failed") {
-                  nextFromYuja = `Transcription failed: ${seg.transcriptionError || "error"}`;
-                }
-              }
-              return {
-                ...row,
-                transcriptionStatus: st,
-                transcriptUrl: seg.transcriptUrl,
-                nextStep: nextFromYuja,
-              };
-            })
-          );
+        if (!res.ok || !data.ok) {
+          if (!opts?.silent) {
+            setError(typeof data.error === "string" ? data.error : `Lookup failed (${res.status})`);
+          }
+          return false;
         }
-      } catch {
-        /* ignore poll errors */
+        const cms = typeof data.chunkMs === "number" ? data.chunkMs : getHomeworkCaptureChunkMs();
+        setChunkMs(cms);
+        setYujaDocId(data.yujaFunnyUrlsDocId || null);
+        if (data.progress) {
+          setYujaProgress(data.progress);
+          const total = data.progress.totalChunks;
+          const rows = segmentsFromYujaApi(data.segments || {}, total, cms);
+          setSegments(rows);
+          chunkIndexRef.current = data.nextChunkIndex ?? total;
+        } else {
+          setYujaProgress(null);
+          setSegments([]);
+          chunkIndexRef.current = 0;
+        }
+        return true;
+      } catch (e) {
+        if (!opts?.silent) {
+          setError(e instanceof Error ? e.message : "Network error");
+        }
+        return false;
+      } finally {
+        if (!opts?.silent) setLoadingLookup(false);
       }
+    },
+    []
+  );
+
+  /** Auto-refresh yuja state while the URL is set and we're not recording. */
+  useEffect(() => {
+    const u = referenceUrl.trim();
+    if (!u) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled || recording) return;
+      await loadYujaState(u, { silent: true });
     };
-    void tick();
-    const id = setInterval(tick, 2500);
+    const id = setInterval(tick, 3000);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId, referenceUrl]);
+  }, [referenceUrl, recording, loadYujaState]);
 
-  const upsertSegment = useCallback((index: number, patch: Partial<CaptureSegment>) => {
-    setSegments((prev) => {
-      const next = [...prev];
-      const i = next.findIndex((r) => r.index === index);
-      const base: CaptureSegment =
-        i >= 0
-          ? next[i]
-          : {
-              index,
-              timeRange: "",
-              minuteLabel: "",
-              uploadStatus: "uploading",
-              nextStep: "",
-            };
-      const t = formatSegmentTimes(index, chunkMs);
-      const merged: CaptureSegment = {
-        ...base,
-        timeRange: t.timeRange,
-        minuteLabel: t.minuteLabel,
-        ...patch,
-      };
-      if (i >= 0) next[i] = merged;
-      else next.push(merged);
-      return next.sort((a, b) => a.index - b.index);
-    });
-  }, [chunkMs]);
+  const upsertSegment = useCallback(
+    (index: number, patch: Partial<CaptureSegment>) => {
+      setSegments((prev) => {
+        const next = [...prev];
+        const i = next.findIndex((r) => r.index === index);
+        const base: CaptureSegment =
+          i >= 0
+            ? next[i]
+            : {
+                index,
+                timeRange: "",
+                minuteLabel: "",
+                uploadStatus: "uploading",
+                transcriptionStatus: "",
+                nextStep: "",
+              };
+        const t = formatSegmentTimes(index, chunkMs);
+        const merged: CaptureSegment = {
+          ...base,
+          timeRange: t.timeRange,
+          minuteLabel: t.minuteLabel,
+          ...patch,
+        };
+        if (i >= 0) next[i] = merged;
+        else next.push(merged);
+        return next.sort((a, b) => a.index - b.index);
+      });
+    },
+    [chunkMs]
+  );
 
   const uploadChunk = useCallback(
-    async (blob: Blob, index: number, sid: string) => {
+    async (blob: Blob, index: number, url: string) => {
       const fd = new FormData();
-      fd.append("sessionId", sid);
+      fd.append("url", url);
       fd.append("chunkIndex", String(index));
       const type = blob.type || "video/webm";
       fd.append("file", new File([blob], `part_${index}.webm`, { type }));
@@ -253,195 +320,72 @@ export default function HomeworkBrowserCapture(props: Props) {
         credentials: "include",
         body: fd,
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; url?: string };
-      if (!res.ok) {
-        throw new Error(typeof data.error === "string" ? data.error : `Chunk upload failed (${res.status})`);
-      }
-      const url = typeof data.url === "string" ? data.url : undefined;
-      upsertSegment(index, {
-        uploadStatus: "uploaded",
-        byteScaleUrl: url,
-        nextStep: referenceUrl.trim()
-          ? "Transcribing segment (Yuja pipeline)…"
-          : "Awaiting finalize — then Cloud Function will transcribe (no reference URL for segment pipeline)",
-      });
-
-      if (referenceUrl.trim()) {
-        void fetch("/api/admin/homework-capture/chunk-transcribe", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: sid, chunkIndex: index }),
-        })
-          .then(async (tr) => {
-            const td = (await tr.json().catch(() => ({}))) as { error?: string; ok?: boolean };
-            if (!tr.ok) {
-              upsertSegment(index, {
-                nextStep:
-                  typeof td.error === "string"
-                    ? `Segment transcription failed: ${td.error}`
-                    : "Segment transcription failed",
-              });
-              return;
-            }
-            upsertSegment(index, {
-              nextStep: "Segment transcribed — finalize when done recording",
-            });
-          })
-          .catch(() => {
-            upsertSegment(index, { nextStep: "Segment transcription request failed (network)" });
-          });
-      }
-    },
-    [upsertSegment, referenceUrl]
-  );
-
-  async function startSession(): Promise<string | null> {
-    setError("");
-    setDone("");
-    setPipeline(null);
-    setLastSubmissionId(null);
-    const w = Number(week);
-    if (!week.trim() || Number.isNaN(w) || w < 1) {
-      setError("Enter a valid week number");
-      return null;
-    }
-    const sid = lockedStudentId || selectedStudentId.trim();
-    if (!sid) {
-      setError("Select a student");
-      return null;
-    }
-    const displayName =
-      lockedStudentId && lockedName ? lockedName : roster?.find((x) => x.id === sid)?.label || "Student";
-
-    const refTrim = referenceUrl.trim();
-    const res = await fetch("/api/admin/homework-capture/session", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        studentId: sid,
-        week: w,
-        studentName: displayName,
-        referenceUrl: refTrim || undefined,
-        forceNew: startFreshSession,
-        resumeIfExists: !startFreshSession && refTrim.length > 0,
-      }),
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      sessionId?: string;
-      resumed?: boolean;
-      chunkMs?: number;
-      chunks?: Array<{ chunkIndex: number; url: string }>;
-      nextChunkIndex?: number;
-    };
-    if (!res.ok) {
-      setError(typeof data.error === "string" ? data.error : `Session failed (${res.status})`);
-      return null;
-    }
-    const id = data.sessionId as string;
-    setSessionId(id);
-    sessionIdRef.current = id;
-    const cms = typeof data.chunkMs === "number" ? data.chunkMs : getHomeworkCaptureChunkMs();
-    setChunkMs(cms);
-
-    if (data.resumed && Array.isArray(data.chunks)) {
-      const nextIdx =
-        typeof data.nextChunkIndex === "number"
-          ? data.nextChunkIndex
-          : data.chunks.length > 0
-            ? Math.max(...data.chunks.map((c) => c.chunkIndex)) + 1
-            : 0;
-      chunkIndexRef.current = nextIdx;
-      if (data.chunks.length > 0) {
-        setSegments(segmentsFromResumeChunks(data.chunks, cms));
-        setDone(
-          `Resumed open session — ${data.chunks.length} segment(s) on ByteScale. Next recording continues at segment ${nextIdx + 1}.`
-        );
-      } else {
-        setSegments([]);
-        setDone("Resumed open session — no segments yet. Start recording when ready.");
-      }
-    } else {
-      chunkIndexRef.current = 0;
-      setSegments([]);
-    }
-    return id;
-  }
-
-  async function loadSavedProgress() {
-    setError("");
-    setDone("");
-    const w = Number(week);
-    if (!week.trim() || Number.isNaN(w) || w < 1) {
-      setError("Enter a valid week number");
-      return;
-    }
-    const sid = lockedStudentId || selectedStudentId.trim();
-    if (!sid) {
-      setError("Select a student");
-      return;
-    }
-    const refTrim = referenceUrl.trim();
-    if (!refTrim) {
-      setError("Paste the same Yuja / LMS reference URL used before to find your saved session.");
-      return;
-    }
-    setLoadingResume(true);
-    try {
-      const params = new URLSearchParams({
-        studentId: sid,
-        week: String(w),
-        referenceUrl: refTrim,
-      });
-      const res = await fetch(`/api/admin/homework-capture/resume?${params}`, { credentials: "include" });
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
-        sessionId?: string;
-        chunkMs?: number;
-        chunks?: Array<{ chunkIndex: number; url: string }>;
-        nextChunkIndex?: number;
+        url?: string;
+        yujaFunnyUrlsDocId?: string;
       };
       if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : `Lookup failed (${res.status})`);
-        return;
-      }
-      const id = data.sessionId as string;
-      const cms = typeof data.chunkMs === "number" ? data.chunkMs : getHomeworkCaptureChunkMs();
-      setSessionId(id);
-      sessionIdRef.current = id;
-      setChunkMs(cms);
-      chunkIndexRef.current =
-        typeof data.nextChunkIndex === "number"
-          ? data.nextChunkIndex
-          : (data.chunks?.length ?? 0);
-      if (data.chunks && data.chunks.length > 0) {
-        setSegments(segmentsFromResumeChunks(data.chunks, cms));
-        setDone(
-          `Loaded saved session — ${data.chunks.length} segment(s). Next recording starts at segment ${chunkIndexRef.current + 1}.`
+        throw new Error(
+          typeof data.error === "string" ? data.error : `Chunk upload failed (${res.status})`
         );
-      } else {
-        setSegments([]);
-        setDone("Session found but no segments uploaded yet — start recording when ready.");
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Network error");
-    } finally {
-      setLoadingResume(false);
-    }
-  }
+      const segUrl = typeof data.url === "string" ? data.url : undefined;
+      if (data.yujaFunnyUrlsDocId) setYujaDocId(data.yujaFunnyUrlsDocId);
+      upsertSegment(index, {
+        uploadStatus: "uploaded",
+        byteScaleUrl: segUrl,
+        transcriptionStatus: "pending",
+        nextStep: "Transcribing…",
+      });
+
+      // Fire-and-forget transcription.
+      void fetch("/api/admin/homework-capture/chunk-transcribe", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, chunkIndex: index }),
+      })
+        .then(async (tr) => {
+          const td = (await tr.json().catch(() => ({}))) as { error?: string; transcriptUrl?: string };
+          if (!tr.ok) {
+            upsertSegment(index, {
+              transcriptionStatus: "failed",
+              transcriptionError: td.error || "Segment transcription failed",
+              nextStep: `Transcription failed — retry`,
+            });
+            return;
+          }
+          upsertSegment(index, {
+            transcriptionStatus: "complete",
+            transcriptUrl: td.transcriptUrl,
+            nextStep: "Transcribed ✓",
+          });
+        })
+        .catch(() => {
+          upsertSegment(index, {
+            transcriptionStatus: "failed",
+            nextStep: "Transcription request failed (network)",
+          });
+        });
+    },
+    [upsertSegment]
+  );
 
   async function startRecording() {
     setError("");
     setDone("");
-    try {
-      let sid = sessionIdRef.current;
-      if (!sid) {
-        sid = await startSession();
-      }
-      if (!sid) return;
+    const u = referenceUrl.trim();
+    if (!u) {
+      setError("Paste the Yuja / LMS reference URL first — it's the identity of this recording.");
+      return;
+    }
 
+    // Ensure the yuja doc exists and pull current state (so we resume at the right index).
+    const ok = await loadYujaState(u, { create: true });
+    if (!ok) return;
+
+    try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: true,
@@ -458,16 +402,16 @@ export default function HomeworkBrowserCapture(props: Props) {
         chunkIndexRef.current += 1;
         upsertSegment(idx, {
           uploadStatus: "uploading",
-          nextStep: "Uploading segment to ByteScale…",
+          nextStep: "Uploading…",
         });
         try {
-          await uploadChunk(ev.data, idx, sid!);
+          await uploadChunk(ev.data, idx, referenceUrlRef.current || u);
         } catch (e) {
           const msg = e instanceof Error ? e.message : "Chunk upload failed";
           upsertSegment(idx, {
             uploadStatus: "failed",
             uploadError: msg,
-            nextStep: "Fix error and record again if needed",
+            nextStep: "Upload failed — stop and start again",
           });
           setError(msg);
           stopTracks();
@@ -501,23 +445,78 @@ export default function HomeworkBrowserCapture(props: Props) {
     stopTracks();
   }
 
+  async function retryFailedTranscriptions() {
+    setError("");
+    setDone("");
+    const u = referenceUrl.trim();
+    if (!u) {
+      setError("Paste the reference URL first");
+      return;
+    }
+    setLoadingRetry(true);
+    try {
+      const res = await fetch("/api/admin/homework-capture/retry-failed", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: u }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        retried?: Array<{ chunkIndex: number }>;
+        stillFailed?: Array<{ chunkIndex: number }>;
+        attempted?: number;
+      };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : `Retry failed (${res.status})`);
+        return;
+      }
+      const okCount = data.retried?.length || 0;
+      const failCount = data.stillFailed?.length || 0;
+      setDone(
+        `Retried ${data.attempted || 0} segment(s): ${okCount} succeeded, ${failCount} still failed.`
+      );
+      await loadYujaState(u, { silent: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setLoadingRetry(false);
+    }
+  }
+
   async function finalize() {
     setError("");
     setDone("");
-    const sid = sessionIdRef.current;
-    if (!sid) {
-      setError("No active session");
+    const u = referenceUrl.trim();
+    if (!u) {
+      setError("Reference URL is required to finalize");
       return;
     }
+    const w = Number(week);
+    if (!week.trim() || Number.isNaN(w) || w < 1) {
+      setError("Enter a valid week number");
+      return;
+    }
+    const sid = lockedStudentId || selectedStudentId.trim();
+    if (!sid) {
+      setError("Select a student");
+      return;
+    }
+
     setLoadingFinalize(true);
     try {
       const res = await fetch("/api/admin/homework-capture/finalize", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sid }),
+        body: JSON.stringify({ url: u, studentId: sid, week: w }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        submissionId?: string;
+        combinedTranscriptionUrl?: string;
+        videoCount?: number;
+      };
       if (!res.ok) {
         setError(typeof data.error === "string" ? data.error : `Finalize failed (${res.status})`);
         return;
@@ -525,17 +524,7 @@ export default function HomeworkBrowserCapture(props: Props) {
       const subId = data.submissionId as string;
       setLastSubmissionId(subId);
       setPipeline({ status: "pending" });
-      setDone(`Submission ${subId} created. Cloud Function will transcribe and grade.`);
-      setSessionId(null);
-      sessionIdRef.current = null;
-      chunkIndexRef.current = 0;
-      setSegments((prev) =>
-        prev.map((row) =>
-          row.uploadStatus === "uploaded"
-            ? { ...row, nextStep: "Queued — Gemini transcription + merge (see pipeline below)" }
-            : row
-        )
-      );
+      setDone(`Submission ${subId} created. Cloud Function will grade using the pre-merged transcript.`);
       if (!lockedStudentId) setSelectedStudentId("");
       router.refresh();
     } catch (e) {
@@ -556,7 +545,9 @@ export default function HomeworkBrowserCapture(props: Props) {
       if (cancelled || n >= max) return;
       n += 1;
       try {
-        const res = await fetch(`/api/admin/submissions/${lastSubmissionId}`, { credentials: "include" });
+        const res = await fetch(`/api/admin/submissions/${lastSubmissionId}`, {
+          credentials: "include",
+        });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || cancelled) return;
         const st = typeof data.status === "string" ? data.status : "";
@@ -564,7 +555,9 @@ export default function HomeworkBrowserCapture(props: Props) {
           status: st,
           transcriptionUrl: data.transcriptionUrl as string | undefined,
           transcriptionTextPreview:
-            typeof data.transcriptionText === "string" ? data.transcriptionText.slice(0, 120) + "…" : undefined,
+            typeof data.transcriptionText === "string"
+              ? data.transcriptionText.slice(0, 120) + "…"
+              : undefined,
           gradeReportUrl: data.gradeReportUrl as string | undefined,
           error: data.error as string | undefined,
         });
@@ -584,8 +577,10 @@ export default function HomeworkBrowserCapture(props: Props) {
     };
   }, [lastSubmissionId]);
 
-  const uploadedCount = segments.filter((r) => r.uploadStatus === "uploaded").length;
-  const anyFailed = segments.some((r) => r.uploadStatus === "failed");
+  const totalChunks = yujaProgress?.totalChunks ?? 0;
+  const chunksTranscribed = yujaProgress?.chunksTranscribed ?? 0;
+  const anyFailed = (yujaProgress?.chunksFailed ?? 0) > 0;
+  const mergeReady = !!yujaProgress?.mergeReady;
 
   return (
     <div style={{ display: "grid", gap: "1.25rem" }}>
@@ -598,10 +593,8 @@ export default function HomeworkBrowserCapture(props: Props) {
         <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.8rem" }}>
           <span style={{ color: "var(--muted)" }}>Student</span>
           <select
-            required={!lockedStudentId}
             value={selectedStudentId}
             onChange={(e) => setSelectedStudentId(e.target.value)}
-            disabled={!!sessionId}
             style={{ ...s.select, maxWidth: "100%", width: "min(100%, 28rem)" }}
           >
             <option value="">— Select student —</option>
@@ -622,65 +615,46 @@ export default function HomeworkBrowserCapture(props: Props) {
             min={1}
             value={week}
             onChange={(e) => setWeek(e.target.value)}
-            disabled={!!sessionId}
             style={{ ...s.input, width: "6rem" }}
           />
         </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.8rem", flex: "1 1 14rem" }}>
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.25rem",
+            fontSize: "0.8rem",
+            flex: "1 1 14rem",
+          }}
+        >
           <span style={{ color: "var(--muted)" }}>Reference URL (Yuja / LMS player link)</span>
           <input
             type="url"
             value={referenceUrl}
             onChange={(e) => setReferenceUrl(e.target.value)}
-            disabled={!!sessionId}
-            placeholder="Used to match a saved session if you stop mid-video"
+            onBlur={() => {
+              const u = referenceUrl.trim();
+              if (u) void loadYujaState(u);
+            }}
+            placeholder="This URL is the identity of the recording (sha256 → doc id)"
             style={s.input}
           />
         </label>
-      </div>
-
-      <label
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          gap: "0.5rem",
-          fontSize: "0.8rem",
-          color: "var(--muted)",
-          cursor: sessionId ? "default" : "pointer",
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={startFreshSession}
-          disabled={!!sessionId}
-          onChange={(e) => setStartFreshSession(e.target.checked)}
-          style={{ marginTop: "0.15rem" }}
-        />
-        <span>
-          Start a <strong>new</strong> session (do not resume) — same student + week + URL otherwise reuses an{" "}
-          <strong>open</strong> Firestore session and continues chunk indices.
-        </span>
-      </label>
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
         <button
           type="button"
-          onClick={() => void loadSavedProgress()}
-          disabled={!!sessionId || loadingResume}
+          onClick={() => void loadYujaState(referenceUrl)}
+          disabled={loadingLookup || !referenceUrl.trim()}
           style={{ ...s.btnGhost, fontSize: "0.82rem" }}
         >
-          {loadingResume ? "Loading…" : "Load saved progress only"}
+          {loadingLookup ? "Loading…" : "Check status"}
         </button>
-        <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
-          Fetches segment table from Firestore without starting the recorder (needs student, week, and reference URL).
-        </span>
       </div>
 
       <p style={{ fontSize: "0.72rem", color: "var(--muted)", margin: 0 }}>
-        Share your <strong>tab</strong> with audio when prompted (Chrome). Recording is split every{" "}
-        <strong>{Math.round(chunkMs / 1000)}s</strong>. If uploads fail with 413, set{" "}
-        <code style={{ fontSize: "0.65rem" }}>NEXT_PUBLIC_HOMEWORK_CAPTURE_CHUNK_MS=45000</code> in{" "}
-        <code style={{ fontSize: "0.65rem" }}>.env.local</code>.
+        Share your <strong>tab</strong> with audio when prompted (Chrome). Recording splits every{" "}
+        <strong>{Math.round(chunkMs / 1000)}s</strong>. The URL is the key — if you paste a URL that
+        already has segments, recording resumes at the next chunk index. If you paste a URL with
+        ≥90% coverage you&apos;re ready to finalize.
       </p>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
@@ -688,10 +662,10 @@ export default function HomeworkBrowserCapture(props: Props) {
           <button
             type="button"
             onClick={() => void startRecording()}
-            style={{ ...s.btnPrimary, opacity: loadingFinalize ? 0.6 : 1 }}
-            disabled={loadingFinalize}
+            disabled={loadingFinalize || loadingRetry || !referenceUrl.trim()}
+            style={{ ...s.btnPrimary, opacity: loadingFinalize || loadingRetry ? 0.6 : 1 }}
           >
-            {sessionId ? "Start recording tab" : "Create session & record"}
+            {totalChunks > 0 ? `Resume recording at chunk ${chunkIndexRef.current + 1}` : "Start recording tab"}
           </button>
         ) : (
           <button type="button" onClick={() => void stopRecording()} style={s.btnPrimary}>
@@ -700,19 +674,67 @@ export default function HomeworkBrowserCapture(props: Props) {
         )}
         <button
           type="button"
+          onClick={() => void retryFailedTranscriptions()}
+          disabled={recording || loadingRetry || !anyFailed}
+          style={{ ...s.btnGhost, opacity: anyFailed && !recording ? 1 : 0.5 }}
+        >
+          {loadingRetry ? "Retrying…" : "Retry failed transcriptions"}
+        </button>
+        <button
+          type="button"
           onClick={() => void finalize()}
-          disabled={!sessionId || recording || uploadedCount === 0 || loadingFinalize}
-          style={{ ...s.btnGhost, opacity: sessionId && !recording && uploadedCount > 0 ? 1 : 0.5 }}
+          disabled={!mergeReady || recording || loadingFinalize}
+          style={{ ...s.btnGhost, opacity: mergeReady && !recording ? 1 : 0.5 }}
         >
           {loadingFinalize ? "Finalizing…" : "Finalize & create submission"}
         </button>
       </div>
 
-      {anyFailed && (
-        <p style={{ fontSize: "0.8rem", color: "var(--danger)", margin: 0 }}>
-          One or more segments failed to upload. Fix the issue (e.g. chunk size / network), start a new session, and record
-          again.
-        </p>
+      {yujaProgress && totalChunks > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "1rem",
+            alignItems: "center",
+            fontSize: "0.82rem",
+            padding: "0.75rem 1rem",
+            borderRadius: "8px",
+            background: "var(--surface, rgba(0,0,0,0.2))",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <span>
+            Coverage:{" "}
+            <strong>
+              {chunksTranscribed}/{totalChunks}
+            </strong>{" "}
+            ({Math.round(yujaProgress.transcribeRatio * 100)}%)
+          </span>
+          <span>
+            Need ≥<strong>{yujaProgress.minRequiredTranscripts}</strong> for merge
+          </span>
+          {mergeReady ? (
+            <span style={{ color: "var(--success, #3fb950)" }}>✓ Ready to finalize</span>
+          ) : (
+            <span style={{ color: "var(--muted)" }}>Keep recording or retry failed</span>
+          )}
+          {yujaProgress.failedChunkIndices.length > 0 && (
+            <span style={{ color: "var(--danger)" }}>
+              Failed: {yujaProgress.failedChunkIndices.join(", ")}
+            </span>
+          )}
+          {yujaProgress.combinedTranscriptionUrl && (
+            <a
+              href={yujaProgress.combinedTranscriptionUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "var(--accent)" }}
+            >
+              Open merged transcript
+            </a>
+          )}
+        </div>
       )}
 
       <div style={{ overflowX: "auto" }}>
@@ -722,37 +744,29 @@ export default function HomeworkBrowserCapture(props: Props) {
               <th style={s.th}>#</th>
               <th style={s.th}>Timeline</th>
               <th style={s.th}>Minute span</th>
-              <th style={s.th}>Upload</th>
-              <th style={s.th}>ByteScale segment</th>
-              <th style={s.th}>Transcript (.txt)</th>
-              <th style={s.th}>Next step</th>
+              <th style={s.th}>Chunk</th>
+              <th style={s.th}>Transcript</th>
+              <th style={s.th}>Status</th>
             </tr>
           </thead>
           <tbody>
             {segments.length === 0 ? (
               <tr>
-                <td colSpan={7} style={{ ...s.td, color: "var(--muted)", fontStyle: "italic" }}>
-                  No segments yet. Start recording and pick the tab where the LMS video plays.
+                <td colSpan={6} style={{ ...s.td, color: "var(--muted)", fontStyle: "italic" }}>
+                  {referenceUrl.trim()
+                    ? "No segments yet for this URL. Start recording."
+                    : "Paste a reference URL to check its state."}
                 </td>
               </tr>
             ) : (
               segments.map((row) => (
                 <tr key={row.index}>
                   <td style={s.td}>{row.index + 1}</td>
-                  <td style={{ ...s.td, fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}>{row.timeRange}</td>
-                  <td style={{ ...s.td, fontSize: "0.82rem", color: "var(--muted)" }}>{row.minuteLabel}</td>
-                  <td style={s.td}>
-                    {row.uploadStatus === "uploading" && (
-                      <span style={{ color: "var(--accent)" }}>Uploading…</span>
-                    )}
-                    {row.uploadStatus === "uploaded" && (
-                      <span style={{ color: "var(--success, #2d6a4f)" }}>Uploaded</span>
-                    )}
-                    {row.uploadStatus === "failed" && (
-                      <span style={{ color: "var(--danger)" }} title={row.uploadError}>
-                        Failed
-                      </span>
-                    )}
+                  <td style={{ ...s.td, fontFamily: "ui-monospace, monospace", fontSize: "0.82rem" }}>
+                    {row.timeRange}
+                  </td>
+                  <td style={{ ...s.td, fontSize: "0.82rem", color: "var(--muted)" }}>
+                    {row.minuteLabel}
                   </td>
                   <td style={s.td}>
                     {row.byteScaleUrl ? (
@@ -760,10 +774,16 @@ export default function HomeworkBrowserCapture(props: Props) {
                         href={row.byteScaleUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        style={{ fontSize: "0.75rem", wordBreak: "break-all" }}
+                        style={{ fontSize: "0.75rem" }}
                       >
                         Open
                       </a>
+                    ) : row.uploadStatus === "uploading" ? (
+                      <span style={{ color: "var(--accent)" }}>Uploading…</span>
+                    ) : row.uploadStatus === "failed" ? (
+                      <span style={{ color: "var(--danger)" }} title={row.uploadError}>
+                        Missing
+                      </span>
                     ) : (
                       "—"
                     )}
@@ -774,19 +794,21 @@ export default function HomeworkBrowserCapture(props: Props) {
                         href={row.transcriptUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        style={{ fontSize: "0.75rem", wordBreak: "break-all" }}
+                        style={{ fontSize: "0.75rem" }}
                       >
                         Open
                       </a>
                     ) : row.transcriptionStatus === "pending" ? (
                       <span style={{ fontSize: "0.78rem", color: "var(--accent)" }}>Pending…</span>
                     ) : row.transcriptionStatus === "failed" ? (
-                      <span style={{ fontSize: "0.78rem", color: "var(--danger)" }}>Failed</span>
+                      <span style={{ fontSize: "0.78rem", color: "var(--danger)" }} title={row.transcriptionError}>
+                        Failed
+                      </span>
                     ) : (
                       "—"
                     )}
                   </td>
-                  <td style={{ ...s.td, fontSize: "0.8rem", maxWidth: "12rem" }}>{row.nextStep}</td>
+                  <td style={{ ...s.td, fontSize: "0.8rem", maxWidth: "14rem" }}>{row.nextStep}</td>
                 </tr>
               ))
             )}
@@ -794,34 +816,11 @@ export default function HomeworkBrowserCapture(props: Props) {
         </table>
       </div>
 
-      <p style={{ fontSize: "0.78rem", color: "var(--muted)", margin: 0 }}>
-        Session: {sessionId ? `${sessionId.slice(0, 10)}…` : "—"} · Segments: {segments.length} · Uploaded: {uploadedCount}
-        {yujaProgress && referenceUrl.trim() ? (
-          <>
-            {" "}
-            · Yuja doc:{" "}
-            <strong>
-              {yujaProgress.chunksTranscribed}/{yujaProgress.totalChunks}
-            </strong>{" "}
-            segments transcribed (need ≥{yujaProgress.minRequiredTranscripts} at ~90%) · Merge-ready:{" "}
-            <strong>{yujaProgress.mergeReady ? "yes" : "no"}</strong>
-            {yujaProgress.combinedTranscriptionUrl ? (
-              <>
-                {" "}
-                · Combined:{" "}
-                <a
-                  href={yujaProgress.combinedTranscriptionUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "var(--accent)" }}
-                >
-                  open
-                </a>
-              </>
-            ) : null}
-          </>
-        ) : null}
-      </p>
+      {yujaDocId && (
+        <p style={{ fontSize: "0.72rem", color: "var(--muted)", margin: 0, fontFamily: "ui-monospace, monospace" }}>
+          yuja_funny_urls/{yujaDocId.slice(0, 16)}…
+        </p>
+      )}
 
       {lastSubmissionId && pipeline && (
         <div
@@ -829,10 +828,12 @@ export default function HomeworkBrowserCapture(props: Props) {
             border: "1px solid var(--border)",
             borderRadius: "8px",
             padding: "1rem",
-            background: "var(--surface-elevated, rgba(0,0,0,0.2))",
+            background: "var(--surface, rgba(0,0,0,0.2))",
           }}
         >
-          <h3 style={{ fontSize: "0.95rem", fontWeight: 600, margin: "0 0 0.75rem" }}>Submission pipeline</h3>
+          <h3 style={{ fontSize: "0.95rem", fontWeight: 600, margin: "0 0 0.75rem" }}>
+            Submission pipeline
+          </h3>
           <table style={s.table}>
             <tbody>
               <tr>
@@ -848,10 +849,15 @@ export default function HomeworkBrowserCapture(props: Props) {
                 <td style={s.td}>{pipeline.status || "—"}</td>
               </tr>
               <tr>
-                <td style={{ ...s.td, fontWeight: 600 }}>Combined transcript (.txt on ByteScale)</td>
+                <td style={{ ...s.td, fontWeight: 600 }}>Combined transcript</td>
                 <td style={s.td}>
                   {pipeline.transcriptionUrl ? (
-                    <a href={pipeline.transcriptionUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.85rem" }}>
+                    <a
+                      href={pipeline.transcriptionUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: "0.85rem" }}
+                    >
                       Open full text
                     </a>
                   ) : (
@@ -860,10 +866,15 @@ export default function HomeworkBrowserCapture(props: Props) {
                 </td>
               </tr>
               <tr>
-                <td style={{ ...s.td, fontWeight: 600 }}>Grade report JSON (ByteScale)</td>
+                <td style={{ ...s.td, fontWeight: 600 }}>Grade report JSON</td>
                 <td style={s.td}>
                   {pipeline.gradeReportUrl ? (
-                    <a href={pipeline.gradeReportUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: "0.85rem" }}>
+                    <a
+                      href={pipeline.gradeReportUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: "0.85rem" }}
+                    >
                       Open
                     </a>
                   ) : (
@@ -880,7 +891,14 @@ export default function HomeworkBrowserCapture(props: Props) {
             </tbody>
           </table>
           {pipeline.transcriptionTextPreview && (
-            <p style={{ fontSize: "0.72rem", color: "var(--muted)", margin: "0.75rem 0 0", fontFamily: "ui-monospace, monospace" }}>
+            <p
+              style={{
+                fontSize: "0.72rem",
+                color: "var(--muted)",
+                margin: "0.75rem 0 0",
+                fontFamily: "ui-monospace, monospace",
+              }}
+            >
               Preview: {pipeline.transcriptionTextPreview}
             </p>
           )}
@@ -892,9 +910,7 @@ export default function HomeworkBrowserCapture(props: Props) {
           {error}
         </p>
       )}
-      {done && (
-        <p style={{ color: "var(--success, #2d6a4f)", fontSize: "0.85rem", margin: 0 }}>{done}</p>
-      )}
+      {done && <p style={{ color: "var(--success, #3fb950)", fontSize: "0.85rem", margin: 0 }}>{done}</p>}
     </div>
   );
 }

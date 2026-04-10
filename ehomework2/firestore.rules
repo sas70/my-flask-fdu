@@ -42,5 +42,11 @@ service cloud.firestore {
     match /students_introduction/{docId} {
       allow read, write: if request.auth != null;
     }
+
+    // Tab-capture state, keyed ONLY by sha256(normalizedVideoUrl). One doc per video URL.
+    // Holds chunk upload URLs, per-segment transcripts, and the merged transcript.
+    match /yuja_funny_urls/{docId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

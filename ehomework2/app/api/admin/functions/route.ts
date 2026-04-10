@@ -26,11 +26,6 @@ const DEFINED_FUNCTIONS = [
     description: "Retries failed transcription or grading",
   },
   {
-    name: "onYujaFunnyUrlsUpdated",
-    trigger: "yuja_funny_urls/{docId} — onUpdate",
-    description: "When combined transcript URL is set; syncs submission premerge if needed, audit timestamp",
-  },
-  {
     name: "onDiscussionCreated",
     trigger: "discussions/{id} — onCreate",
     description: "Generates discussion rubric via Claude",

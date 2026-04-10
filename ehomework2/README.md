@@ -6,6 +6,7 @@ Event-driven grading pipeline for Python homework video walkthroughs. Firestore 
 Here’s how to redeploy Cloud Functions in this repo:
 
 firebase login --reauth 
+npm install -g firebase-tools
 firebase deploy --only functions
 
 One command (recommended)

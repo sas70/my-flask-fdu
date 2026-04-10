@@ -1,14 +1,21 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { normalizeHomeworkCaptureReferenceUrl } from "@/lib/homework-capture-reference-url";
-import { sessionRef } from "@/lib/homework-capture-server";
 import { referencePlaybackUrlKeyToYujaDocId } from "@/lib/yuja-funny-urls-id";
 
 export { referencePlaybackUrlKeyToYujaDocId };
 
-/** Firestore collection: one doc per normalized Yuja / LMS video URL. */
+/**
+ * Firestore collection: ONE doc per normalized video URL.
+ *
+ * First principle: the doc id depends only on the URL — never on student, week,
+ * or any other axis. The doc is the single source of truth for everything we know
+ * about a specific video URL (recorded chunks, per-segment transcripts, merged
+ * walkthrough). The old "capture session" concept is gone: if two recordings
+ * happen against the same URL, the newer one overwrites the older one in this doc.
+ */
 export const YUJA_FUNNY_URLS = "yuja_funny_urls";
 
-/** Minimum fraction of session chunks that must have segment transcripts before merge (finalize / Cloud path). */
+/** Minimum fraction of chunks that must have segment transcripts before merge. */
 export const YUJA_MERGE_DEFAULT_MIN_RATIO = 0.9;
 
 export function requiredTranscriptCount(chunkCount: number, minRatio: number): number {
@@ -16,149 +23,207 @@ export function requiredTranscriptCount(chunkCount: number, minRatio: number): n
   return Math.max(1, Math.ceil(chunkCount * minRatio - 1e-12));
 }
 
-export type YujaProgress = {
-  totalChunks: number;
-  chunksWithMedia: number;
-  chunksTranscribed: number;
-  minRequiredTranscripts: number;
-  transcribeRatio: number;
-  mergeReady: boolean;
-  combinedTranscriptionUrl: string | null;
-};
-
-/**
- * Progress for tab-capture UI: session chunk indices vs yuja_funny_urls.segments.
- */
-export function computeYujaProgress(
-  orderedChunkIndices: number[],
-  segments: Record<string, YujaSegmentRecord> | undefined,
-  combinedTranscriptionUrl: string | null | undefined,
-  minRatio: number = YUJA_MERGE_DEFAULT_MIN_RATIO
-): YujaProgress {
-  const n = orderedChunkIndices.length;
-  const seg = segments || {};
-  let chunksWithMedia = 0;
-  let chunksTranscribed = 0;
-  for (const idx of orderedChunkIndices) {
-    const s = seg[String(idx)];
-    if (s?.chunkUrl) chunksWithMedia += 1;
-    if (s?.transcriptUrl) chunksTranscribed += 1;
-  }
-  const minRequired = requiredTranscriptCount(n, minRatio);
-  const transcribeRatio = n > 0 ? chunksTranscribed / n : 0;
-  const mergeReady = n > 0 && chunksTranscribed >= minRequired;
-  return {
-    totalChunks: n,
-    chunksWithMedia,
-    chunksTranscribed,
-    minRequiredTranscripts: minRequired,
-    transcribeRatio,
-    mergeReady,
-    combinedTranscriptionUrl: combinedTranscriptionUrl || null,
-  };
-}
-
 export type YujaSegmentRecord = {
   chunkUrl?: string;
   chunkMimeType?: string;
+  chunkName?: string;
+  startOffsetMs?: number;
+  endOffsetMs?: number;
+  durationMs?: number;
+  chunkLengthNominalMs?: number;
+  durationSource?: "nominal" | "client";
   transcriptUrl?: string;
   transcriptionStatus?: "pending" | "complete" | "failed";
   transcriptionError?: string;
 };
 
+export type YujaDocData = {
+  referencePlaybackUrl: string;
+  referencePlaybackUrlKey: string;
+  chunkMs?: number;
+  segments?: Record<string, YujaSegmentRecord>;
+  combinedTranscriptionUrl?: string;
+  combinedTranscriptionStatus?: "complete";
+  mergedAt?: FirebaseFirestore.Timestamp;
+  lastMergedSegmentCount?: number;
+  lastMergeOmittedChunkIndices?: number[];
+  lastMergeMinRatio?: number;
+  createdAt?: FirebaseFirestore.Timestamp;
+  updatedAt?: FirebaseFirestore.Timestamp;
+};
+
+export type YujaProgress = {
+  totalChunks: number;
+  chunksWithMedia: number;
+  chunksTranscribed: number;
+  chunksFailed: number;
+  minRequiredTranscripts: number;
+  transcribeRatio: number;
+  mergeReady: boolean;
+  combinedTranscriptionUrl: string | null;
+  failedChunkIndices: number[];
+  missingChunkIndices: number[];
+};
+
 /**
- * Find or create the `yuja_funny_urls` doc for this video URL (stable key).
- * New docs use a deterministic doc id (SHA-256 hex of `referencePlaybackUrlKey`).
- * Legacy random Firestore ids are still resolved via `referencePlaybackUrlKey` query.
+ * Compute progress/coverage for a yuja doc.
+ *
+ * "Total chunks" = the max segment index currently stored + 1, i.e. "the first chunk
+ * we haven't recorded yet is chunk N, so we must cover chunks 0..N-1". This lets the
+ * UI figure out where to resume a recording without needing a separate session doc.
  */
-export async function getOrCreateYujaFunnyDoc(
-  db: Firestore,
-  referenceUrl: string
-): Promise<{ docId: string; created: boolean }> {
-  const trimmed = referenceUrl.trim();
-  const key = normalizeHomeworkCaptureReferenceUrl(trimmed);
-  if (!key) {
-    throw new Error("Invalid reference URL for Yuja doc");
-  }
+export function computeYujaProgress(
+  segments: Record<string, YujaSegmentRecord> | undefined,
+  combinedTranscriptionUrl: string | null | undefined,
+  minRatio: number = YUJA_MERGE_DEFAULT_MIN_RATIO
+): YujaProgress {
+  const seg = segments || {};
+  const keys = Object.keys(seg)
+    .map((k) => Number(k))
+    .filter((n) => Number.isInteger(n) && n >= 0)
+    .sort((a, b) => a - b);
 
-  const coll = db.collection(YUJA_FUNNY_URLS);
-  const detId = referencePlaybackUrlKeyToYujaDocId(key);
-  const detRef = coll.doc(detId);
-  const detSnap = await detRef.get();
+  const totalChunks = keys.length === 0 ? 0 : Math.max(...keys) + 1;
 
-  if (detSnap.exists) {
-    const stored = detSnap.data()?.referencePlaybackUrlKey;
-    if (stored !== key) {
-      throw new Error(
-        `yuja_funny_urls deterministic id collision: doc ${detId} key mismatch`
-      );
+  let chunksWithMedia = 0;
+  let chunksTranscribed = 0;
+  let chunksFailed = 0;
+  const failedChunkIndices: number[] = [];
+  const missingChunkIndices: number[] = [];
+
+  for (let i = 0; i < totalChunks; i++) {
+    const s = seg[String(i)];
+    if (!s) {
+      missingChunkIndices.push(i);
+      continue;
     }
-    return { docId: detId, created: false };
+    if (s.chunkUrl) chunksWithMedia += 1;
+    if (s.transcriptUrl) {
+      chunksTranscribed += 1;
+    } else if (s.transcriptionStatus === "failed") {
+      chunksFailed += 1;
+      failedChunkIndices.push(i);
+    }
   }
 
-  const legacySnap = await coll.where("referencePlaybackUrlKey", "==", key).limit(1).get();
-  if (!legacySnap.empty) {
-    const doc = legacySnap.docs[0];
-    return { docId: doc.id, created: false };
+  const minRequired = requiredTranscriptCount(totalChunks, minRatio);
+  const transcribeRatio = totalChunks > 0 ? chunksTranscribed / totalChunks : 0;
+  const mergeReady = totalChunks > 0 && chunksTranscribed >= minRequired;
+
+  return {
+    totalChunks,
+    chunksWithMedia,
+    chunksTranscribed,
+    chunksFailed,
+    minRequiredTranscripts: minRequired,
+    transcribeRatio,
+    mergeReady,
+    combinedTranscriptionUrl: combinedTranscriptionUrl || null,
+    failedChunkIndices,
+    missingChunkIndices,
+  };
+}
+
+/** Normalized URL → deterministic doc id. Throws for invalid URLs. */
+export function yujaDocIdForUrl(referenceUrl: string): { docId: string; key: string } {
+  const key = normalizeHomeworkCaptureReferenceUrl(referenceUrl.trim());
+  if (!key) throw new Error("Invalid reference URL for Yuja doc");
+  return { docId: referencePlaybackUrlKeyToYujaDocId(key), key };
+}
+
+/**
+ * Resolve (or create) the yuja doc for a URL. Idempotent.
+ * Returns the doc id and current data (or empty data if newly created).
+ */
+export async function getOrCreateYujaDoc(
+  db: Firestore,
+  referenceUrl: string,
+  opts?: { chunkMs?: number }
+): Promise<{ docId: string; data: YujaDocData; created: boolean }> {
+  const trimmed = referenceUrl.trim();
+  const { docId, key } = yujaDocIdForUrl(trimmed);
+  const ref = db.collection(YUJA_FUNNY_URLS).doc(docId);
+  const snap = await ref.get();
+
+  if (snap.exists) {
+    return { docId, data: snap.data() as YujaDocData, created: false };
   }
 
-  await detRef.set({
+  const seed: YujaDocData = {
     referencePlaybackUrl: trimmed,
     referencePlaybackUrlKey: key,
     segments: {},
+    ...(opts?.chunkMs ? { chunkMs: opts.chunkMs } : {}),
+  };
+
+  await ref.set({
+    ...seed,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  return { docId: detId, created: true };
+  return { docId, data: seed, created: true };
 }
 
-/**
- * If the session has a reference URL, ensure `yujaFunnyUrlsDocId` is set (lookup/create by URL).
- */
-export async function ensureSessionYujaFunnyDoc(db: Firestore, sessionId: string): Promise<string | null> {
-  const sess = await sessionRef(db, sessionId).get();
-  if (!sess.exists) return null;
-  const data = sess.data() as Record<string, unknown>;
-  const refUrl = typeof data.referencePlaybackUrl === "string" ? data.referencePlaybackUrl.trim() : "";
-  if (!refUrl) return null;
-
-  const existing = typeof data.yujaFunnyUrlsDocId === "string" ? data.yujaFunnyUrlsDocId.trim() : "";
-  if (existing) return existing;
-
-  const { docId } = await getOrCreateYujaFunnyDoc(db, refUrl);
-  await sessionRef(db, sessionId).update({
-    yujaFunnyUrlsDocId: docId,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  return docId;
+/** Load the yuja doc by URL (no create). Returns null if not found. */
+export async function loadYujaDocByUrl(
+  db: Firestore,
+  referenceUrl: string
+): Promise<{ docId: string; data: YujaDocData } | null> {
+  const { docId } = yujaDocIdForUrl(referenceUrl);
+  const snap = await db.collection(YUJA_FUNNY_URLS).doc(docId).get();
+  if (!snap.exists) return null;
+  return { docId, data: snap.data() as YujaDocData };
 }
 
-/**
- * After a WebM chunk is on ByteScale, record chunk URL on the Yuja doc (segment map).
- */
+/** Load the yuja doc by doc id (no create). Returns null if not found. */
+export async function loadYujaDocById(
+  db: Firestore,
+  yujaDocId: string
+): Promise<YujaDocData | null> {
+  const snap = await db.collection(YUJA_FUNNY_URLS).doc(yujaDocId).get();
+  if (!snap.exists) return null;
+  return snap.data() as YujaDocData;
+}
+
+/** Record a chunk WebM URL on the yuja doc (overwrites if the index already exists). */
 export async function writeYujaSegmentChunk(
   db: Firestore,
   yujaDocId: string,
   chunkIndex: number,
-  chunkUrl: string,
-  chunkMimeType: string
+  chunk: {
+    chunkUrl: string;
+    chunkMimeType: string;
+    chunkName?: string;
+    startOffsetMs?: number;
+    endOffsetMs?: number;
+    durationMs?: number;
+    chunkLengthNominalMs?: number;
+    durationSource?: "nominal" | "client";
+  }
 ): Promise<void> {
   const key = String(chunkIndex);
-  await db
-    .collection(YUJA_FUNNY_URLS)
-    .doc(yujaDocId)
-    .update({
-      [`segments.${key}.chunkUrl`]: chunkUrl,
-      [`segments.${key}.chunkMimeType`]: chunkMimeType,
-      [`segments.${key}.transcriptionStatus`]: "pending",
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+  const updates: Record<string, unknown> = {
+    [`segments.${key}.chunkUrl`]: chunk.chunkUrl,
+    [`segments.${key}.chunkMimeType`]: chunk.chunkMimeType,
+    [`segments.${key}.transcriptionStatus`]: "pending",
+    // Clear any stale error/transcript from a previous attempt
+    [`segments.${key}.transcriptionError`]: FieldValue.delete(),
+    [`segments.${key}.transcriptUrl`]: FieldValue.delete(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (chunk.chunkName !== undefined) updates[`segments.${key}.chunkName`] = chunk.chunkName;
+  if (chunk.startOffsetMs !== undefined) updates[`segments.${key}.startOffsetMs`] = chunk.startOffsetMs;
+  if (chunk.endOffsetMs !== undefined) updates[`segments.${key}.endOffsetMs`] = chunk.endOffsetMs;
+  if (chunk.durationMs !== undefined) updates[`segments.${key}.durationMs`] = chunk.durationMs;
+  if (chunk.chunkLengthNominalMs !== undefined)
+    updates[`segments.${key}.chunkLengthNominalMs`] = chunk.chunkLengthNominalMs;
+  if (chunk.durationSource !== undefined) updates[`segments.${key}.durationSource`] = chunk.durationSource;
+
+  await db.collection(YUJA_FUNNY_URLS).doc(yujaDocId).update(updates);
 }
 
-/**
- * After Gemini + ByteScale .txt upload for one segment.
- */
+/** Record a successful Gemini transcript on a segment. */
 export async function writeYujaSegmentTranscript(
   db: Firestore,
   yujaDocId: string,
@@ -177,6 +242,7 @@ export async function writeYujaSegmentTranscript(
     });
 }
 
+/** Mark a segment transcription as failed with a short error. */
 export async function writeYujaSegmentTranscriptFailed(
   db: Firestore,
   yujaDocId: string,
@@ -204,23 +270,22 @@ async function fetchTextFromUrl(url: string): Promise<string> {
 }
 
 export type MergeYujaSegmentOptions = {
-  /** Require at least this fraction of session chunks to have `transcriptUrl` (default `YUJA_MERGE_DEFAULT_MIN_RATIO`). */
+  /** Require at least this fraction of chunks to have `transcriptUrl` (default `YUJA_MERGE_DEFAULT_MIN_RATIO`). */
   minTranscribedRatio?: number;
 };
 
 /**
- * Concatenate segment transcript .txt files in chunk order; upload combined file to ByteScale.
- * Omits segments without a transcript if the **minimum transcript count** (ceil(n × ratio)) is still met.
+ * Concatenate segment transcript .txt files in chunk order; upload combined file to ByteScale;
+ * write `combinedTranscriptionUrl` back to the yuja doc.
  *
- * **Contract:** The uploaded `.txt` is **inner body only** (merge note + segment blocks). Cloud Functions add the
- * outer "## Video walkthrough transcription(s)" / "### Merged segment transcripts" wrapper via
- * `buildPremergedVideoSectionFromUrl` in `gradeFlow.js` when building the full grading corpus — do not duplicate
- * those headings in this file content.
+ * **Contract:** The uploaded `.txt` is **inner body only** (merge note + segment blocks).
+ * Cloud Functions add the outer "## Video walkthrough transcription(s)" / "### Merged segment
+ * transcripts" wrapper via `buildPremergedVideoSectionFromUrl` in `gradeFlow.js` when building
+ * the full grading corpus — do not duplicate those headings in this file content.
  */
 export async function mergeYujaSegmentTranscripts(
   db: Firestore,
   yujaDocId: string,
-  orderedChunkIndices: number[],
   uploadTextToBytescale: (text: string, fileName: string) => Promise<string>,
   options?: MergeYujaSegmentOptions
 ): Promise<{
@@ -229,6 +294,7 @@ export async function mergeYujaSegmentTranscripts(
   includedChunkIndices: number[];
   omittedChunkIndices: number[];
   minTranscribedRatio: number;
+  totalChunks: number;
 }> {
   const minRatio = options?.minTranscribedRatio ?? YUJA_MERGE_DEFAULT_MIN_RATIO;
   const docRef = db.collection(YUJA_FUNNY_URLS).doc(yujaDocId);
@@ -236,41 +302,43 @@ export async function mergeYujaSegmentTranscripts(
   if (!snap.exists) {
     throw new Error("yuja_funny_urls document not found");
   }
-  const data = snap.data() as { segments?: Record<string, YujaSegmentRecord> };
+  const data = snap.data() as YujaDocData;
   const segments = data.segments || {};
 
-  const n = orderedChunkIndices.length;
-  if (n === 0) {
-    throw new Error("No chunks to merge");
+  const indices = Object.keys(segments)
+    .map((k) => Number(k))
+    .filter((n) => Number.isInteger(n) && n >= 0)
+    .sort((a, b) => a - b);
+
+  if (indices.length === 0) {
+    throw new Error("No segments recorded yet for this video.");
   }
 
-  const required = requiredTranscriptCount(n, minRatio);
+  const totalChunks = Math.max(...indices) + 1;
+  const required = requiredTranscriptCount(totalChunks, minRatio);
   const included: number[] = [];
   const omitted: number[] = [];
 
-  for (const idx of orderedChunkIndices) {
-    const seg = segments[String(idx)];
-    if (seg?.transcriptUrl) {
-      included.push(idx);
-    } else {
-      omitted.push(idx);
-    }
+  for (let i = 0; i < totalChunks; i++) {
+    const seg = segments[String(i)];
+    if (seg?.transcriptUrl) included.push(i);
+    else omitted.push(i);
   }
 
   if (included.length < required) {
     throw new Error(
-      `Need at least ${required} of ${n} segment transcriptions (~${Math.round(minRatio * 100)}% with transcripts; have ${included.length}). Chunks missing transcript: ${omitted.join(", ") || "—"}.`
+      `Need at least ${required} of ${totalChunks} segment transcriptions (~${Math.round(minRatio * 100)}% with transcripts; have ${included.length}). Chunks missing transcript: ${omitted.join(", ") || "—"}.`
     );
   }
 
   const parts: string[] = [];
   if (omitted.length > 0) {
     parts.push(
-      `## Merge note\n\nMerged **${included.length}** of **${n}** segments (≥${Math.round(minRatio * 100)}% rule). Omitted indices (no transcript): **${omitted.join(", ")}**.`
+      `## Merge note\n\nMerged **${included.length}** of **${totalChunks}** segments (≥${Math.round(minRatio * 100)}% rule). Omitted indices (no transcript): **${omitted.join(", ")}**.`
     );
   }
 
-  for (const idx of orderedChunkIndices) {
+  for (const idx of included) {
     const seg = segments[String(idx)];
     if (!seg?.transcriptUrl) continue;
     const text = await fetchTextFromUrl(seg.transcriptUrl);
@@ -297,5 +365,6 @@ export async function mergeYujaSegmentTranscripts(
     includedChunkIndices: included,
     omittedChunkIndices: omitted,
     minTranscribedRatio: minRatio,
+    totalChunks,
   };
 }

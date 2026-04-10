@@ -226,12 +226,12 @@ async function buildCombinedGradingInput(submission, submissionId) {
 
   const sections = [];
 
-  const premergedUrl = submission.premergedWalkthroughTranscriptionUrl;
-  if (premergedUrl && String(premergedUrl).trim()) {
+  const premergedUrl = String(submission.premergedWalkthroughTranscriptionUrl || "").trim();
+  if (premergedUrl) {
     console.log(
       `[hw submission] using premerged walkthrough transcript (skip per-video Gemini) submissionId=${submissionId}`
     );
-    sections.push(await buildPremergedVideoSectionFromUrl(String(premergedUrl).trim()));
+    sections.push(await buildPremergedVideoSectionFromUrl(premergedUrl));
   } else if (videoParts.length > 0) {
     const transcriptions = [];
     for (let i = 0; i < videoParts.length; i++) {
