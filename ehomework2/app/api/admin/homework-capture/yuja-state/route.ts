@@ -56,7 +56,8 @@ export async function GET(request: NextRequest) {
         minTranscribedRatio: YUJA_MERGE_DEFAULT_MIN_RATIO,
         segments: {},
         progress: {
-          totalChunks: 0,
+          mergeTargetChunks: 0,
+          recordedSpanChunks: 0,
           chunksWithMedia: 0,
           chunksTranscribed: 0,
           chunksFailed: 0,
@@ -66,9 +67,12 @@ export async function GET(request: NextRequest) {
           combinedTranscriptionUrl: null,
           failedChunkIndices: [],
           missingChunkIndices: [],
+          mergeTargetFromSourceDuration: false,
+          nextRecordChunkIndex: 0,
         },
         nextChunkIndex: 0,
         combinedTranscriptionUrl: null,
+        sourceDurationMs: null,
       });
     }
 
@@ -76,7 +80,11 @@ export async function GET(request: NextRequest) {
     const progress = computeYujaProgress(
       segments,
       existing.data.combinedTranscriptionUrl,
-      YUJA_MERGE_DEFAULT_MIN_RATIO
+      YUJA_MERGE_DEFAULT_MIN_RATIO,
+      {
+        chunkMs: existing.data.chunkMs || chunkMs,
+        sourceDurationMs: existing.data.sourceDurationMs ?? null,
+      }
     );
 
     return NextResponse.json({
@@ -88,8 +96,9 @@ export async function GET(request: NextRequest) {
       minTranscribedRatio: YUJA_MERGE_DEFAULT_MIN_RATIO,
       segments,
       progress,
-      nextChunkIndex: progress.totalChunks, // next chunk to record/upload
+      nextChunkIndex: progress.nextRecordChunkIndex,
       combinedTranscriptionUrl: existing.data.combinedTranscriptionUrl || null,
+      sourceDurationMs: existing.data.sourceDurationMs ?? null,
     });
   } catch (e) {
     console.error("[homework-capture/yuja-state GET]", e);

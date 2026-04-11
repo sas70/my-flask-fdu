@@ -18,6 +18,12 @@ const {
   uploadTextToBytescale: (text: string, fileName: string) => Promise<string>;
 };
 
+function truncateUrl(u: string, max = 96): string {
+  const s = String(u || "");
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
+}
+
 /**
  * Transcribe one recorded chunk (Gemini) and write the .txt URL to the yuja doc.
  *
@@ -75,11 +81,18 @@ export async function POST(request: NextRequest) {
 
     const mime = seg.chunkMimeType || "video/webm";
 
+    console.log(
+      `[homework-capture/chunk-transcribe] start chunkIndex=${chunkIndex} doc=${docId.slice(0, 12)}… mime=${mime} chunkUrl=${truncateUrl(seg.chunkUrl)}`
+    );
+
     let text: string;
     try {
       text = await transcribeWithGemini(seg.chunkUrl, mime);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      console.error(
+        `[homework-capture/chunk-transcribe] GEMINI_FAIL chunkIndex=${chunkIndex} doc=${docId.slice(0, 12)}… ${msg}`
+      );
       await writeYujaSegmentTranscriptFailed(db, docId, chunkIndex, msg);
       return NextResponse.json(
         { error: msg, chunkIndex, transcriptionStatus: "failed" },
@@ -90,6 +103,10 @@ export async function POST(request: NextRequest) {
     const fileName = `yuja_funny_urls/${docId}/segment_${String(chunkIndex).padStart(4, "0")}.txt`;
     const transcriptUrl = await uploadTextToBytescale(text, fileName);
     await writeYujaSegmentTranscript(db, docId, chunkIndex, transcriptUrl);
+
+    console.log(
+      `[homework-capture/chunk-transcribe] ok chunkIndex=${chunkIndex} doc=${docId.slice(0, 12)}… transcriptChars=${text.length}`
+    );
 
     return NextResponse.json({
       ok: true,

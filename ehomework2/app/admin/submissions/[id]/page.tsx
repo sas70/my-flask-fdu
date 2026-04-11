@@ -1,10 +1,34 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { StudentFeedbackReturn } from "@/lib/student-feedback-payload";
 import { getDb } from "@/lib/firebase-admin";
 import * as s from "@/lib/admin-styles";
 import RetryButton from "../../_components/RetryButton";
+import SubmissionStudentFeedbackPanel from "../../_components/SubmissionStudentFeedbackPanel";
 
 export const dynamic = "force-dynamic";
+
+function parseStudentFeedbackReturn(sub: Record<string, unknown>): {
+  submittedAtIso: string | null;
+  payload: StudentFeedbackReturn;
+} | null {
+  const r = sub.studentFeedbackReturn;
+  if (!r || typeof r !== "object") return null;
+  const o = r as Record<string, unknown>;
+  const strArr = (x: unknown) => (Array.isArray(x) ? x.map((v) => String(v ?? "")) : []);
+  const ts = o.submittedAt as { toDate?: () => Date } | undefined;
+  const submittedAtIso = typeof ts?.toDate === "function" ? ts.toDate().toLocaleString() : null;
+  return {
+    submittedAtIso,
+    payload: {
+      categoryReplies: strArr(o.categoryReplies),
+      overallParagraphReplies: strArr(o.overallParagraphReplies),
+      strengthItemReplies: strArr(o.strengthItemReplies),
+      areaItemReplies: strArr(o.areaItemReplies),
+      generalComment: typeof o.generalComment === "string" ? o.generalComment : "",
+    },
+  };
+}
 
 export default async function SubmissionDetailPage({
   params,
@@ -161,6 +185,19 @@ export default async function SubmissionDetailPage({
         </div>
       )}
 
+      {(sub.gradeReportUrl || sub.grade != null) && (
+        <SubmissionStudentFeedbackPanel
+          submissionId={id}
+          existingToken={typeof sub.studentFeedbackToken === "string" ? sub.studentFeedbackToken : undefined}
+          existingInviteUrl={
+            process.env.NEXT_PUBLIC_APP_URL && typeof sub.studentFeedbackToken === "string"
+              ? `${String(process.env.NEXT_PUBLIC_APP_URL).replace(/\/$/, "")}/student-feedback/${sub.studentFeedbackToken}`
+              : undefined
+          }
+          feedbackReturn={parseStudentFeedbackReturn(sub as Record<string, unknown>) ?? undefined}
+        />
+      )}
+
       {/* Feedback */}
       {sub.overallFeedback && (
         <div style={{ ...s.card, marginBottom: "1.5rem" }}>
@@ -239,8 +276,8 @@ export default async function SubmissionDetailPage({
       )}
 
       {/* Links */}
-      {(sub.transcriptionUrl || sub.gradeReportUrl) && (
-        <div style={{ marginTop: "1.5rem", display: "flex", gap: "1rem", fontSize: "0.85rem" }}>
+      {(sub.transcriptionUrl || sub.gradeReportUrl || sub.grade != null) && (
+        <div style={{ marginTop: "1.5rem", display: "flex", flexWrap: "wrap", gap: "1rem", fontSize: "0.85rem" }}>
           {sub.transcriptionUrl && (
             <a href={sub.transcriptionUrl} target="_blank" rel="noopener noreferrer">
               Transcription file
@@ -250,6 +287,11 @@ export default async function SubmissionDetailPage({
             <a href={sub.gradeReportUrl} target="_blank" rel="noopener noreferrer">
               Grade report JSON
             </a>
+          )}
+          {(sub.gradeReportUrl || sub.grade != null) && (
+            <Link href={`/admin/submissions/${id}/grading-report`} style={{ color: "var(--accent)" }}>
+              Final student grading report
+            </Link>
           )}
         </div>
       )}

@@ -570,6 +570,8 @@ async function gradeSubmission(submissionId, transcriptionText, assignment) {
       strengths: gradeResult.strengths,
       areasForImprovement: gradeResult.areasForImprovement,
       questionsRaised: gradeResult.questionsRaised || [],
+      bonusAwarded: gradeResult.bonusAwarded || [],
+      deductionsApplied: gradeResult.deductionsApplied || [],
       gradeReportUrl: gradeUrl,
       gradedAt: FieldValue.serverTimestamp(),
     });

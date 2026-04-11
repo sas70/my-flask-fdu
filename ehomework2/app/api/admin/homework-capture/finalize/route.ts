@@ -100,9 +100,16 @@ export async function POST(request: NextRequest) {
 
     // Build the video list from the segments (in chunk-index order).
     const segments = (data.segments || {}) as Record<string, YujaSegmentRecord>;
+    const chunkMs =
+      data.chunkMs && Number.isFinite(data.chunkMs) && data.chunkMs > 0 ? data.chunkMs : 60_000;
+    const src = data.sourceDurationMs;
+    const mergeTarget =
+      src != null && Number.isFinite(src) && src > 0 ? Math.max(1, Math.ceil(src / chunkMs)) : null;
+
     const orderedIndices = Object.keys(segments)
       .map((k) => Number(k))
       .filter((n) => Number.isInteger(n) && n >= 0)
+      .filter((n) => mergeTarget == null || n < mergeTarget)
       .sort((a, b) => a - b);
 
     const videos = orderedIndices

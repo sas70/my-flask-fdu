@@ -7,6 +7,7 @@ interface Profile {
   name: string;
   email: string;
   dept: string;
+  courseName: string;
   bio: string;
   notes: string;
 }
@@ -16,6 +17,7 @@ export default function ProfileForm() {
     name: "",
     email: "",
     dept: "",
+    courseName: "",
     bio: "",
     notes: "",
   });
@@ -31,6 +33,7 @@ export default function ProfileForm() {
           name: data.name || "",
           email: data.email || "",
           dept: data.dept || "",
+          courseName: data.courseName || "",
           bio: data.bio || "",
           notes: data.notes || "",
         });
@@ -94,6 +97,20 @@ export default function ProfileForm() {
           style={s.input}
           placeholder="Computer Science"
         />
+
+        <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>Course name</label>
+        <div>
+          <input
+            value={profile.courseName}
+            onChange={(e) => setProfile({ ...profile, courseName: e.target.value })}
+            style={s.input}
+            placeholder="CS 101 — Introduction to Programming"
+          />
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.75rem", color: "var(--muted)" }}>
+            Shown at the top of student-facing grading report PDFs. You can also set{" "}
+            <code style={{ fontSize: "0.7rem" }}>NEXT_PUBLIC_HOMEWORK_COURSE_NAME</code> in the environment.
+          </p>
+        </div>
 
         <label style={{ padding: "0.6rem 0", fontSize: "0.9rem", color: "var(--muted)" }}>Bio</label>
         <textarea

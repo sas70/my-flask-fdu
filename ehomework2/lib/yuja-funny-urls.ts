@@ -41,6 +41,8 @@ export type YujaDocData = {
   referencePlaybackUrl: string;
   referencePlaybackUrlKey: string;
   chunkMs?: number;
+  /** When set, merge/coverage use ceil(sourceDurationMs / chunkMs) segments, not max segment index. */
+  sourceDurationMs?: number;
   segments?: Record<string, YujaSegmentRecord>;
   combinedTranscriptionUrl?: string;
   combinedTranscriptionStatus?: "complete";
@@ -53,7 +55,10 @@ export type YujaDocData = {
 };
 
 export type YujaProgress = {
-  totalChunks: number;
+  /** Segments required for merge/coverage: from source video length if set, else recorded span. */
+  mergeTargetChunks: number;
+  /** Max segment index in Firestore + 1 (may exceed merge target if over-recorded). */
+  recordedSpanChunks: number;
   chunksWithMedia: number;
   chunksTranscribed: number;
   chunksFailed: number;
@@ -63,19 +68,27 @@ export type YujaProgress = {
   combinedTranscriptionUrl: string | null;
   failedChunkIndices: number[];
   missingChunkIndices: number[];
+  /** True when merge target comes from `sourceDurationMs` on the doc. */
+  mergeTargetFromSourceDuration: boolean;
+  /** 0-based index to record next. */
+  nextRecordChunkIndex: number;
 };
 
 /**
  * Compute progress/coverage for a yuja doc.
  *
- * "Total chunks" = the max segment index currently stored + 1, i.e. "the first chunk
- * we haven't recorded yet is chunk N, so we must cover chunks 0..N-1". This lets the
- * UI figure out where to resume a recording without needing a separate session doc.
+ * **Merge/coverage denominator** = `mergeTargetChunks`: `ceil(sourceDurationMs/chunkMs)` when
+ * `sourceDurationMs` is set (actual Yuja video length), otherwise the recorded span
+ * (max segment index + 1). That way over-recorded extra slots do not inflate “need ≥N”.
+ *
+ * **Resume index** = first missing/failed within the merge window, else fill the next slot
+ * up to `mergeTargetChunks`, else stop at the merge target when duration is known.
  */
 export function computeYujaProgress(
   segments: Record<string, YujaSegmentRecord> | undefined,
   combinedTranscriptionUrl: string | null | undefined,
-  minRatio: number = YUJA_MERGE_DEFAULT_MIN_RATIO
+  minRatio: number = YUJA_MERGE_DEFAULT_MIN_RATIO,
+  opts?: { chunkMs: number; sourceDurationMs?: number | null }
 ): YujaProgress {
   const seg = segments || {};
   const keys = Object.keys(seg)
@@ -83,7 +96,15 @@ export function computeYujaProgress(
     .filter((n) => Number.isInteger(n) && n >= 0)
     .sort((a, b) => a - b);
 
-  const totalChunks = keys.length === 0 ? 0 : Math.max(...keys) + 1;
+  const recordedSpanChunks = keys.length === 0 ? 0 : Math.max(...keys) + 1;
+  const chunkMs =
+    opts?.chunkMs && Number.isFinite(opts.chunkMs) && opts.chunkMs > 0 ? opts.chunkMs : 60_000;
+  const src = opts?.sourceDurationMs;
+  const mergeTargetFromSourceDuration =
+    src != null && Number.isFinite(src) && src > 0;
+  const mergeTargetChunks = mergeTargetFromSourceDuration
+    ? Math.max(1, Math.ceil(src / chunkMs))
+    : recordedSpanChunks;
 
   let chunksWithMedia = 0;
   let chunksTranscribed = 0;
@@ -91,13 +112,17 @@ export function computeYujaProgress(
   const failedChunkIndices: number[] = [];
   const missingChunkIndices: number[] = [];
 
-  for (let i = 0; i < totalChunks; i++) {
+  for (let i = 0; i < mergeTargetChunks; i++) {
     const s = seg[String(i)];
     if (!s) {
       missingChunkIndices.push(i);
       continue;
     }
-    if (s.chunkUrl) chunksWithMedia += 1;
+    if (!s.chunkUrl) {
+      missingChunkIndices.push(i);
+      continue;
+    }
+    chunksWithMedia += 1;
     if (s.transcriptUrl) {
       chunksTranscribed += 1;
     } else if (s.transcriptionStatus === "failed") {
@@ -106,12 +131,33 @@ export function computeYujaProgress(
     }
   }
 
-  const minRequired = requiredTranscriptCount(totalChunks, minRatio);
-  const transcribeRatio = totalChunks > 0 ? chunksTranscribed / totalChunks : 0;
-  const mergeReady = totalChunks > 0 && chunksTranscribed >= minRequired;
+  const minRequired = requiredTranscriptCount(mergeTargetChunks, minRatio);
+  const transcribeRatio =
+    mergeTargetChunks > 0 ? chunksTranscribed / mergeTargetChunks : 0;
+  const mergeReady = mergeTargetChunks > 0 && chunksTranscribed >= minRequired;
+
+  const resumeHeads: number[] = [];
+  if (missingChunkIndices.length) resumeHeads.push(Math.min(...missingChunkIndices));
+  if (failedChunkIndices.length) resumeHeads.push(Math.min(...failedChunkIndices));
+
+  let nextRecordChunkIndex: number;
+  if (resumeHeads.length > 0) {
+    nextRecordChunkIndex = Math.min(...resumeHeads);
+  } else if (mergeTargetChunks === 0) {
+    nextRecordChunkIndex = 0;
+  } else if (mergeTargetFromSourceDuration) {
+    if (recordedSpanChunks < mergeTargetChunks) {
+      nextRecordChunkIndex = recordedSpanChunks;
+    } else {
+      nextRecordChunkIndex = mergeTargetChunks;
+    }
+  } else {
+    nextRecordChunkIndex = recordedSpanChunks;
+  }
 
   return {
-    totalChunks,
+    mergeTargetChunks,
+    recordedSpanChunks,
     chunksWithMedia,
     chunksTranscribed,
     chunksFailed,
@@ -121,6 +167,8 @@ export function computeYujaProgress(
     combinedTranscriptionUrl: combinedTranscriptionUrl || null,
     failedChunkIndices,
     missingChunkIndices,
+    mergeTargetFromSourceDuration,
+    nextRecordChunkIndex,
   };
 }
 
@@ -184,6 +232,22 @@ export async function loadYujaDocById(
   const snap = await db.collection(YUJA_FUNNY_URLS).doc(yujaDocId).get();
   if (!snap.exists) return null;
   return snap.data() as YujaDocData;
+}
+
+/** Persist source video duration (ms) so merge/coverage use the real Yuja length, not recorded span. */
+export async function setYujaDocSourceDuration(
+  db: Firestore,
+  yujaDocId: string,
+  sourceDurationMs: number | null
+): Promise<void> {
+  const ref = db.collection(YUJA_FUNNY_URLS).doc(yujaDocId);
+  const patch: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
+  if (sourceDurationMs != null && Number.isFinite(sourceDurationMs) && sourceDurationMs > 0) {
+    patch.sourceDurationMs = Math.round(sourceDurationMs);
+  } else {
+    patch.sourceDurationMs = FieldValue.delete();
+  }
+  await ref.update(patch);
 }
 
 /** Record a chunk WebM URL on the yuja doc (overwrites if the index already exists). */
@@ -314,12 +378,20 @@ export async function mergeYujaSegmentTranscripts(
     throw new Error("No segments recorded yet for this video.");
   }
 
-  const totalChunks = Math.max(...indices) + 1;
-  const required = requiredTranscriptCount(totalChunks, minRatio);
+  const recordedSpanChunks = Math.max(...indices) + 1;
+  const chunkMs =
+    data.chunkMs && Number.isFinite(data.chunkMs) && data.chunkMs > 0 ? data.chunkMs : 60_000;
+  const src = data.sourceDurationMs;
+  const mergeTargetChunks =
+    src != null && Number.isFinite(src) && src > 0
+      ? Math.max(1, Math.ceil(src / chunkMs))
+      : recordedSpanChunks;
+
+  const required = requiredTranscriptCount(mergeTargetChunks, minRatio);
   const included: number[] = [];
   const omitted: number[] = [];
 
-  for (let i = 0; i < totalChunks; i++) {
+  for (let i = 0; i < mergeTargetChunks; i++) {
     const seg = segments[String(i)];
     if (seg?.transcriptUrl) included.push(i);
     else omitted.push(i);
@@ -327,14 +399,14 @@ export async function mergeYujaSegmentTranscripts(
 
   if (included.length < required) {
     throw new Error(
-      `Need at least ${required} of ${totalChunks} segment transcriptions (~${Math.round(minRatio * 100)}% with transcripts; have ${included.length}). Chunks missing transcript: ${omitted.join(", ") || "—"}.`
+      `Need at least ${required} of ${mergeTargetChunks} segment transcriptions (~${Math.round(minRatio * 100)}% with transcripts; have ${included.length}). Chunks missing transcript: ${omitted.join(", ") || "—"}.`
     );
   }
 
   const parts: string[] = [];
   if (omitted.length > 0) {
     parts.push(
-      `## Merge note\n\nMerged **${included.length}** of **${totalChunks}** segments (≥${Math.round(minRatio * 100)}% rule). Omitted indices (no transcript): **${omitted.join(", ")}**.`
+      `## Merge note\n\nMerged **${included.length}** of **${mergeTargetChunks}** segments (≥${Math.round(minRatio * 100)}% rule). Omitted indices (no transcript): **${omitted.join(", ")}**.`
     );
   }
 
@@ -365,6 +437,6 @@ export async function mergeYujaSegmentTranscripts(
     includedChunkIndices: included,
     omittedChunkIndices: omitted,
     minTranscribedRatio: minRatio,
-    totalChunks,
+    totalChunks: mergeTargetChunks,
   };
 }

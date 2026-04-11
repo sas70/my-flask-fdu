@@ -87,6 +87,12 @@ export default async function SubmissionsPage({
       </Suspense>
 
       <div style={s.card}>
+        <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0, marginBottom: "1rem", lineHeight: 1.5 }}>
+          <strong>Student feedback link &amp; PDF tools</strong> are not on this list — open a submission first. Click{" "}
+          <strong>View</strong> on a row (or <strong>View → feedback</strong> when graded) to open the submission
+          detail page. After grading, that page includes <strong>Student feedback on this report</strong> and a link to
+          the formatted <strong>Final student grading report</strong> page.
+        </p>
         {submissions.length === 0 ? (
           <p style={{ color: "var(--muted)" }}>No submissions found.</p>
         ) : (
@@ -98,7 +104,7 @@ export default async function SubmissionsPage({
                   <th style={s.th}>Week</th>
                   <th style={s.th}>Status</th>
                   <th style={s.th}>Grade</th>
-                  <th style={s.th}></th>
+                  <th style={s.th}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -117,7 +123,17 @@ export default async function SubmissionsPage({
                         : "—"}
                     </td>
                     <td style={s.td}>
-                      <Link href={`/admin/submissions/${sub.id}`}>View</Link>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem 0.75rem", alignItems: "center" }}>
+                        <Link href={`/admin/submissions/${sub.id}`}>View</Link>
+                        {sub.grade != null && (
+                          <Link
+                            href={`/admin/submissions/${sub.id}#student-feedback-invite`}
+                            style={{ color: "var(--accent)", fontSize: "0.85rem", whiteSpace: "nowrap" }}
+                          >
+                            View → feedback
+                          </Link>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

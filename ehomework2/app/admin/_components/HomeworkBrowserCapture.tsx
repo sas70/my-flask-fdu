@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as s from "@/lib/admin-styles";
 import { getHomeworkCaptureChunkMs } from "@/lib/homework-capture-constants";
+import { extractWebmInitSegment, findFirstClusterByteOffset } from "@/lib/webm-extract-init-segment";
 
 export type HomeworkCaptureStudentOption = { id: string; label: string };
 
@@ -39,7 +40,8 @@ type CaptureSegment = {
 };
 
 type YujaProgressState = {
-  totalChunks: number;
+  mergeTargetChunks: number;
+  recordedSpanChunks: number;
   chunksWithMedia: number;
   chunksTranscribed: number;
   chunksFailed: number;
@@ -49,6 +51,8 @@ type YujaProgressState = {
   combinedTranscriptionUrl: string | null;
   failedChunkIndices: number[];
   missingChunkIndices: number[];
+  mergeTargetFromSourceDuration: boolean;
+  nextRecordChunkIndex: number;
 };
 
 type YujaSegmentApi = {
@@ -98,13 +102,58 @@ function formatSegmentTimesFromOffsets(startMs: number, endMs: number) {
   };
 }
 
+/** Small indeterminate spinner — no global CSS required (SMIL). */
+function CaptureSpinner({ size = 20 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      aria-hidden
+      style={{ display: "block", flexShrink: 0 }}
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray="31.4 31.4"
+        opacity={0.25}
+      />
+      <g>
+        <animateTransform
+          attributeName="transform"
+          type="rotate"
+          from="0 12 12"
+          to="360 12 12"
+          dur="0.75s"
+          repeatCount="indefinite"
+        />
+        <circle
+          cx="12"
+          cy="12"
+          r="10"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray="15.7 47.1"
+        />
+      </g>
+    </svg>
+  );
+}
+
 function segmentsFromYujaApi(
   apiSegments: Record<string, YujaSegmentApi>,
-  totalChunks: number,
+  rowCount: number,
   chunkMs: number
 ): CaptureSegment[] {
   const rows: CaptureSegment[] = [];
-  for (let i = 0; i < totalChunks; i++) {
+  for (let i = 0; i < rowCount; i++) {
     const seg = apiSegments[String(i)] || {};
     const t =
       typeof seg.startOffsetMs === "number" && typeof seg.endOffsetMs === "number"
@@ -165,6 +214,7 @@ export default function HomeworkBrowserCapture(props: Props) {
   const [chunkMs, setChunkMs] = useState(getHomeworkCaptureChunkMs());
 
   const [recording, setRecording] = useState(false);
+  const recordingRef = useRef(false);
   const [segments, setSegments] = useState<CaptureSegment[]>([]);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -172,6 +222,9 @@ export default function HomeworkBrowserCapture(props: Props) {
   const [loadingLookup, setLoadingLookup] = useState(false);
   const [loadingRetry, setLoadingRetry] = useState(false);
   const [yujaProgress, setYujaProgress] = useState<YujaProgressState | null>(null);
+  /** Minutes — optional; saved as sourceDurationMs on yuja doc for coverage denominator. */
+  const [sourceVideoMinutes, setSourceVideoMinutes] = useState("");
+  const [savingSourceDuration, setSavingSourceDuration] = useState(false);
 
   const [lastSubmissionId, setLastSubmissionId] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<{
@@ -186,10 +239,32 @@ export default function HomeworkBrowserCapture(props: Props) {
   const streamRef = useRef<MediaStream | null>(null);
   const chunkIndexRef = useRef(0);
   const referenceUrlRef = useRef("");
+  /** WebM init segment (EBML header + Tracks) extracted from the first recorded blob.
+   *  Prepended to blobs 1+ so each uploaded chunk is a standalone playable WebM file.
+   *  Without this, only chunk 0 plays — the rest are headerless Cluster data that
+   *  Gemini can't decode (empty audio). */
+  const webmInitSegmentRef = useRef<ArrayBuffer | null>(null);
+  /**
+   * MediaRecorder can fire `ondataavailable` again before the previous async handler
+   * finishes. Without a queue, multiple handlers see `webmInitSegmentRef === null` and
+   * upload raw Cluster slices (invalid WebM → Gemini 400).
+   */
+  const recordingDataChainRef = useRef(Promise.resolve());
+  /** Last `progress` from yuja-state (for startRecording after load). */
+  const latestProgressRef = useRef<YujaProgressState | null>(null);
+  /**
+   * When set (source video length saved), stop recording after segment indices
+   * `0 .. cap-1` — i.e. skip processing when `idx >= cap`.
+   */
+  const recordingSegmentCapRef = useRef<number | null>(null);
 
   useEffect(() => {
     referenceUrlRef.current = referenceUrl;
   }, [referenceUrl]);
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
 
   useEffect(() => {
     if (initialStudentId && roster?.some((x) => x.id === initialStudentId)) {
@@ -205,6 +280,7 @@ export default function HomeworkBrowserCapture(props: Props) {
         setYujaDocId(null);
         setSegments([]);
         setYujaProgress(null);
+        latestProgressRef.current = null;
         return false;
       }
       if (!opts?.silent) {
@@ -226,6 +302,7 @@ export default function HomeworkBrowserCapture(props: Props) {
           segments?: Record<string, YujaSegmentApi>;
           progress?: YujaProgressState;
           nextChunkIndex?: number;
+          sourceDurationMs?: number | null;
         };
         if (!res.ok || !data.ok) {
           if (!opts?.silent) {
@@ -236,13 +313,30 @@ export default function HomeworkBrowserCapture(props: Props) {
         const cms = typeof data.chunkMs === "number" ? data.chunkMs : getHomeworkCaptureChunkMs();
         setChunkMs(cms);
         setYujaDocId(data.yujaFunnyUrlsDocId || null);
+        if (!opts?.silent) {
+          if (typeof data.sourceDurationMs === "number" && data.sourceDurationMs > 0) {
+            setSourceVideoMinutes(String(Math.round((data.sourceDurationMs / 60000) * 1000) / 1000));
+          } else if (data.sourceDurationMs === null || data.sourceDurationMs === undefined) {
+            setSourceVideoMinutes("");
+          }
+        }
         if (data.progress) {
+          latestProgressRef.current = data.progress;
           setYujaProgress(data.progress);
-          const total = data.progress.totalChunks;
-          const rows = segmentsFromYujaApi(data.segments || {}, total, cms);
+          const mt = data.progress.mergeTargetChunks;
+          const span = data.progress.recordedSpanChunks;
+          const rowCount =
+            data.progress.mergeTargetFromSourceDuration && mt > 0
+              ? mt
+              : Math.max(mt, span);
+          const rows = segmentsFromYujaApi(data.segments || {}, rowCount, cms);
           setSegments(rows);
-          chunkIndexRef.current = data.nextChunkIndex ?? total;
+          chunkIndexRef.current =
+            data.nextChunkIndex ??
+            data.progress.nextRecordChunkIndex ??
+            mt;
         } else {
+          latestProgressRef.current = null;
           setYujaProgress(null);
           setSegments([]);
           chunkIndexRef.current = 0;
@@ -308,12 +402,24 @@ export default function HomeworkBrowserCapture(props: Props) {
   );
 
   const uploadChunk = useCallback(
-    async (blob: Blob, index: number, url: string) => {
+    async (
+      blob: Blob,
+      index: number,
+      url: string,
+      diag?: { rawSliceBytes: number; initSegmentBytes: number; clusterOffset?: number }
+    ) => {
       const fd = new FormData();
       fd.append("url", url);
       fd.append("chunkIndex", String(index));
       const type = blob.type || "video/webm";
       fd.append("file", new File([blob], `part_${index}.webm`, { type }));
+      if (diag) {
+        fd.append("diagRawSliceBytes", String(diag.rawSliceBytes));
+        fd.append("diagInitSegmentBytes", String(diag.initSegmentBytes));
+        if (diag.clusterOffset !== undefined) {
+          fd.append("diagClusterOffset", String(diag.clusterOffset));
+        }
+      }
 
       const res = await fetch("/api/admin/homework-capture/chunk", {
         method: "POST",
@@ -385,6 +491,10 @@ export default function HomeworkBrowserCapture(props: Props) {
     const ok = await loadYujaState(u, { create: true });
     if (!ok) return;
 
+    const lp = latestProgressRef.current;
+    recordingSegmentCapRef.current =
+      lp?.mergeTargetFromSourceDuration && lp.mergeTargetChunks > 0 ? lp.mergeTargetChunks : null;
+
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
@@ -396,16 +506,56 @@ export default function HomeworkBrowserCapture(props: Props) {
       const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
       mediaRecorderRef.current = rec;
 
-      rec.ondataavailable = async (ev) => {
+      // Clear the init segment ref so chunk 0 of this recording captures it fresh.
+      webmInitSegmentRef.current = null;
+      recordingDataChainRef.current = Promise.resolve();
+
+      const processTimeslice = async (ev: BlobEvent) => {
         if (!ev.data || ev.data.size === 0) return;
         const idx = chunkIndexRef.current;
+        const cap = recordingSegmentCapRef.current;
+        if (cap != null && idx >= cap) {
+          const r = mediaRecorderRef.current;
+          if (r && r.state !== "inactive") {
+            r.stop();
+          }
+          setRecording(false);
+          recordingSegmentCapRef.current = null;
+          setDone("Recording stopped — reached end of set video length.");
+          return;
+        }
         chunkIndexRef.current += 1;
         upsertSegment(idx, {
           uploadStatus: "uploading",
           nextStep: "Uploading…",
         });
+
+        let blobToUpload = ev.data;
+        let diag: { rawSliceBytes: number; initSegmentBytes: number; clusterOffset?: number };
+
+        // First blob of this recording: extract the WebM init segment for reuse.
+        if (!webmInitSegmentRef.current) {
+          const buf = await ev.data.arrayBuffer();
+          const clusterOff = findFirstClusterByteOffset(new Uint8Array(buf));
+          webmInitSegmentRef.current = extractWebmInitSegment(buf);
+          diag = {
+            rawSliceBytes: ev.data.size,
+            initSegmentBytes: webmInitSegmentRef.current.byteLength,
+            clusterOffset: clusterOff,
+          };
+        } else {
+          // Subsequent blobs: prepend the init segment so Gemini gets a playable file.
+          blobToUpload = new Blob([webmInitSegmentRef.current, ev.data], {
+            type: ev.data.type || "video/webm",
+          });
+          diag = {
+            rawSliceBytes: ev.data.size,
+            initSegmentBytes: webmInitSegmentRef.current.byteLength,
+          };
+        }
+
         try {
-          await uploadChunk(ev.data, idx, referenceUrlRef.current || u);
+          await uploadChunk(blobToUpload, idx, referenceUrlRef.current || u, diag);
         } catch (e) {
           const msg = e instanceof Error ? e.message : "Chunk upload failed";
           upsertSegment(idx, {
@@ -418,6 +568,15 @@ export default function HomeworkBrowserCapture(props: Props) {
         }
       };
 
+      rec.ondataavailable = (ev) => {
+        if (!ev.data || ev.data.size === 0) return;
+        recordingDataChainRef.current = recordingDataChainRef.current
+          .then(() => processTimeslice(ev))
+          .catch((err) => {
+            console.error("[homework-capture] timeslice pipeline", err);
+          });
+      };
+
       rec.addEventListener("stop", () => {
         mediaRecorderRef.current = null;
         stopTracks();
@@ -426,6 +585,7 @@ export default function HomeworkBrowserCapture(props: Props) {
       rec.start(chunkMs);
       setRecording(true);
     } catch (e) {
+      recordingSegmentCapRef.current = null;
       setError(e instanceof Error ? e.message : "Could not start display capture");
     }
   }
@@ -441,6 +601,7 @@ export default function HomeworkBrowserCapture(props: Props) {
       rec.stop();
     }
     mediaRecorderRef.current = null;
+    recordingSegmentCapRef.current = null;
     setRecording(false);
     stopTracks();
   }
@@ -481,6 +642,52 @@ export default function HomeworkBrowserCapture(props: Props) {
       setError(e instanceof Error ? e.message : "Network error");
     } finally {
       setLoadingRetry(false);
+    }
+  }
+
+  async function saveSourceVideoDuration() {
+    setError("");
+    setDone("");
+    const u = referenceUrl.trim();
+    if (!u) {
+      setError("Paste the reference URL first");
+      return;
+    }
+    const raw = sourceVideoMinutes.trim();
+    const mins = raw === "" ? null : Number(raw);
+    if (raw !== "" && (!Number.isFinite(mins) || mins === null || mins <= 0)) {
+      setError("Source video length: enter minutes as a positive number, or leave empty to clear.");
+      return;
+    }
+    setSavingSourceDuration(true);
+    try {
+      const sourceDurationMs = mins == null ? null : mins * 60_000;
+      const res = await fetch("/api/admin/homework-capture/source-duration", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: u, sourceDurationMs }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : `Save failed (${res.status})`);
+        return;
+      }
+      setDone(
+        sourceDurationMs == null
+          ? "Cleared source video length — coverage uses recorded segment span."
+          : "Saved source video length — coverage uses ceil(length ÷ chunk size)."
+      );
+      await loadYujaState(u, { silent: true });
+      if (recordingRef.current) {
+        const lp2 = latestProgressRef.current;
+        recordingSegmentCapRef.current =
+          lp2?.mergeTargetFromSourceDuration && lp2.mergeTargetChunks > 0 ? lp2.mergeTargetChunks : null;
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setSavingSourceDuration(false);
     }
   }
 
@@ -577,10 +784,28 @@ export default function HomeworkBrowserCapture(props: Props) {
     };
   }, [lastSubmissionId]);
 
-  const totalChunks = yujaProgress?.totalChunks ?? 0;
+  const mergeTarget = yujaProgress?.mergeTargetChunks ?? 0;
+  const recordedSpan = yujaProgress?.recordedSpanChunks ?? 0;
+  const hasSegmentActivity = mergeTarget > 0 || recordedSpan > 0;
   const chunksTranscribed = yujaProgress?.chunksTranscribed ?? 0;
+  const chunksWithMedia = yujaProgress?.chunksWithMedia ?? 0;
   const anyFailed = (yujaProgress?.chunksFailed ?? 0) > 0;
   const mergeReady = !!yujaProgress?.mergeReady;
+
+  const transcribePct =
+    mergeTarget > 0 ? Math.min(100, Math.round((chunksTranscribed / mergeTarget) * 100)) : 0;
+  const uploadPct =
+    mergeTarget > 0 ? Math.min(100, Math.round((chunksWithMedia / mergeTarget) * 100)) : 0;
+  const segmentsUploading = segments.filter((r) => r.uploadStatus === "uploading").length;
+  const segmentsTranscribing = segments.filter((r) => r.transcriptionStatus === "pending").length;
+  const workInFlight =
+    loadingLookup ||
+    loadingRetry ||
+    loadingFinalize ||
+    savingSourceDuration ||
+    segmentsUploading > 0 ||
+    segmentsTranscribing > 0 ||
+    recording;
 
   return (
     <div style={{ display: "grid", gap: "1.25rem" }}>
@@ -650,11 +875,38 @@ export default function HomeworkBrowserCapture(props: Props) {
         </button>
       </div>
 
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "flex-end" }}>
+        <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", fontSize: "0.8rem" }}>
+          <span style={{ color: "var(--muted)" }}>Yuja / source video length (minutes)</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={sourceVideoMinutes}
+            onChange={(e) => setSourceVideoMinutes(e.target.value)}
+            placeholder={`e.g. 4 — sets merge target ≈ length ÷ ${Math.round(chunkMs / 60000)} min`}
+            style={{ ...s.input, width: "min(100%, 12rem)" }}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => void saveSourceVideoDuration()}
+          disabled={savingSourceDuration || !referenceUrl.trim()}
+          style={{ ...s.btnGhost, fontSize: "0.82rem" }}
+        >
+          {savingSourceDuration ? "Saving…" : "Save video length"}
+        </button>
+      </div>
+
       <p style={{ fontSize: "0.72rem", color: "var(--muted)", margin: 0 }}>
         Share your <strong>tab</strong> with audio when prompted (Chrome). Recording splits every{" "}
         <strong>{Math.round(chunkMs / 1000)}s</strong>. The URL is the key — if you paste a URL that
-        already has segments, recording resumes at the next chunk index. If you paste a URL with
-        ≥90% coverage you&apos;re ready to finalize.
+        already has segments, recording resumes at the <strong>first missing chunk or first failed
+        transcription</strong> (re-record from there), or after the last segment when everything is
+        OK. If you paste a URL with
+        ≥90% coverage you&apos;re ready to finalize. Set <strong>source video length</strong> so
+        coverage (e.g. 2/4) uses the real Yuja duration — not the number of blob slots recorded.
+        With length saved, recording <strong>stops automatically</strong> after the last segment for
+        that duration.
       </p>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
@@ -665,7 +917,9 @@ export default function HomeworkBrowserCapture(props: Props) {
             disabled={loadingFinalize || loadingRetry || !referenceUrl.trim()}
             style={{ ...s.btnPrimary, opacity: loadingFinalize || loadingRetry ? 0.6 : 1 }}
           >
-            {totalChunks > 0 ? `Resume recording at chunk ${chunkIndexRef.current + 1}` : "Start recording tab"}
+            {hasSegmentActivity
+              ? `Resume recording at chunk ${chunkIndexRef.current + 1}`
+              : "Start recording tab"}
           </button>
         ) : (
           <button type="button" onClick={() => void stopRecording()} style={s.btnPrimary}>
@@ -690,50 +944,163 @@ export default function HomeworkBrowserCapture(props: Props) {
         </button>
       </div>
 
-      {yujaProgress && totalChunks > 0 && (
+      {yujaProgress && hasSegmentActivity && (
         <div
           style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "1rem",
-            alignItems: "center",
-            fontSize: "0.82rem",
-            padding: "0.75rem 1rem",
-            borderRadius: "8px",
+            display: "grid",
+            gap: "0.85rem",
+            padding: "1rem 1.1rem",
+            borderRadius: "10px",
             background: "var(--surface, rgba(0,0,0,0.2))",
             border: "1px solid var(--border)",
           }}
         >
-          <span>
-            Coverage:{" "}
-            <strong>
-              {chunksTranscribed}/{totalChunks}
-            </strong>{" "}
-            ({Math.round(yujaProgress.transcribeRatio * 100)}%)
-          </span>
-          <span>
-            Need ≥<strong>{yujaProgress.minRequiredTranscripts}</strong> for merge
-          </span>
-          {mergeReady ? (
-            <span style={{ color: "var(--success, #3fb950)" }}>✓ Ready to finalize</span>
-          ) : (
-            <span style={{ color: "var(--muted)" }}>Keep recording or retry failed</span>
-          )}
-          {yujaProgress.failedChunkIndices.length > 0 && (
-            <span style={{ color: "var(--danger)" }}>
-              Failed: {yujaProgress.failedChunkIndices.join(", ")}
-            </span>
-          )}
-          {yujaProgress.combinedTranscriptionUrl && (
-            <a
-              href={yujaProgress.combinedTranscriptionUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: "var(--accent)" }}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "0.75rem",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.65rem", minWidth: 0 }}>
+              {workInFlight && (
+                <span style={{ color: "var(--accent)" }}>
+                  <CaptureSpinner size={22} />
+                </span>
+              )}
+              <div>
+                <div
+                  style={{
+                    fontSize: "1.65rem",
+                    fontWeight: 700,
+                    fontVariantNumeric: "tabular-nums",
+                    letterSpacing: "-0.02em",
+                    lineHeight: 1.1,
+                    color: "var(--text)",
+                  }}
+                >
+                  {transcribePct}%
+                  <span style={{ fontSize: "0.72rem", fontWeight: 500, color: "var(--muted)", marginLeft: "0.35rem" }}>
+                    transcribed
+                  </span>
+                </div>
+                <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.2rem" }}>
+                  <strong style={{ color: "var(--text-secondary, var(--text))" }}>
+                    {chunksTranscribed}/{mergeTarget}
+                  </strong>{" "}
+                  segments with transcript
+                  {mergeTarget > 0 && (
+                    <>
+                      {" · "}
+                      <strong style={{ color: "var(--text-secondary, var(--text))" }}>
+                        {chunksWithMedia}/{mergeTarget}
+                      </strong>{" "}
+                      with video uploaded
+                    </>
+                  )}
+                  {yujaProgress.mergeTargetFromSourceDuration ? (
+                    <span> · target from saved Yuja length</span>
+                  ) : (
+                    <span> · target from recorded span</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div style={{ textAlign: "right", fontSize: "0.8rem" }}>
+              {mergeReady ? (
+                <span style={{ color: "var(--success, #3fb950)", fontWeight: 600 }}>Ready to finalize</span>
+              ) : (
+                <span style={{ color: "var(--muted)" }}>
+                  Need ≥{yujaProgress.minRequiredTranscripts} transcripts (~90% rule)
+                </span>
+              )}
+            </div>
+          </div>
+
+          {mergeTarget > 0 && (
+            <div
+              role="progressbar"
+              aria-valuenow={transcribePct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Transcription progress, ${transcribePct} percent`}
+              style={{
+                position: "relative",
+                height: "11px",
+                borderRadius: "999px",
+                background: "var(--border-light, rgba(127,127,127,0.25))",
+                overflow: "hidden",
+              }}
             >
-              Open merged transcript
-            </a>
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: `${uploadPct}%`,
+                  borderRadius: "999px",
+                  background: "color-mix(in srgb, var(--accent) 38%, transparent)",
+                  transition: "width 0.35s ease-out",
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: `${transcribePct}%`,
+                  borderRadius: "999px",
+                  background: "var(--accent)",
+                  boxShadow: "0 0 12px color-mix(in srgb, var(--accent) 45%, transparent)",
+                  transition: "width 0.35s ease-out",
+                }}
+              />
+            </div>
           )}
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "0.65rem 1rem",
+              alignItems: "center",
+              fontSize: "0.8rem",
+            }}
+          >
+            <span style={{ color: "var(--muted)" }}>
+              Bar: <strong style={{ color: "var(--text-secondary)" }}>lighter</strong> = chunks with video ·{" "}
+              <strong style={{ color: "var(--accent)" }}>solid</strong> = transcribed
+            </span>
+            {!mergeReady && (
+              <span style={{ color: "var(--muted)" }}>
+                {workInFlight ? "Working…" : "Keep recording or retry failed segments"}
+              </span>
+            )}
+            {recordedSpan > mergeTarget && yujaProgress.mergeTargetFromSourceDuration && (
+              <span style={{ color: "var(--muted)", fontSize: "0.78rem" }}>
+                Extra Firestore segments past video length (hidden in table): indices ≥ {mergeTarget}
+              </span>
+            )}
+            {yujaProgress.failedChunkIndices.length > 0 && (
+              <span style={{ color: "var(--danger)" }}>
+                Failed: {yujaProgress.failedChunkIndices.join(", ")}
+              </span>
+            )}
+            {yujaProgress.combinedTranscriptionUrl && (
+              <a
+                href={yujaProgress.combinedTranscriptionUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--accent)" }}
+              >
+                Open merged transcript
+              </a>
+            )}
+          </div>
         </div>
       )}
 
@@ -880,6 +1247,17 @@ export default function HomeworkBrowserCapture(props: Props) {
                   ) : (
                     <span style={{ color: "var(--muted)" }}>—</span>
                   )}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ ...s.td, fontWeight: 600 }}>Final student grading report</td>
+                <td style={s.td}>
+                  <Link
+                    href={`/admin/submissions/${lastSubmissionId}/grading-report`}
+                    style={{ fontSize: "0.85rem", color: "var(--accent)", fontWeight: 500 }}
+                  >
+                    View formatted report
+                  </Link>
                 </td>
               </tr>
               {pipeline.error && (

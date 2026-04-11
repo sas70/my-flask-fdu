@@ -14,6 +14,8 @@ export async function GET() {
         name: "",
         email: "",
         dept: "",
+        /** Shown on student-facing grading report PDFs; optional. */
+        courseName: "",
         bio: "",
         notes: "",
         documents: [],
@@ -30,7 +32,7 @@ export async function GET() {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { name, email, dept, bio, notes } = body;
+    const { name, email, dept, courseName, bio, notes } = body;
 
     const db = getDb();
     const ref = db.collection(COLLECTION).doc(DOC_ID);
@@ -40,6 +42,7 @@ export async function PUT(request: NextRequest) {
         name: name || "",
         email: email || "",
         dept: dept || "",
+        courseName: typeof courseName === "string" ? courseName : "",
         bio: bio || "",
         notes: notes || "",
       },

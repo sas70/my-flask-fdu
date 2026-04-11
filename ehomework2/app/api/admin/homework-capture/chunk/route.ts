@@ -15,6 +15,13 @@ function parseOptionalDurationMs(raw: FormDataEntryValue | null): number | undef
   return Math.round(n);
 }
 
+function parseOptionalInt(raw: FormDataEntryValue | null): number | undefined {
+  if (raw == null || raw === "") return undefined;
+  const n = typeof raw === "string" ? Number(raw) : Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 0x7fffffff) return undefined;
+  return Math.floor(n);
+}
+
 function computeChunkTimeline(
   chunkIndex: number,
   chunkLengthNominalMs: number,
@@ -41,6 +48,9 @@ export const maxDuration = 60;
 /** Vercel ~4.5 MB max body; local dev allows larger chunks after next.config body limits. */
 const MAX_CHUNK_BYTES = process.env.VERCEL ? 4_200_000 : 32 * 1024 * 1024;
 
+/** Below this, combined WebM is often broken (bad init merge) or empty media — see terminal warnings. */
+const WARN_COMBINED_BYTES = 2_048;
+
 /**
  * Upload one recorded chunk. The URL is the identity; no session concept.
  *
@@ -65,6 +75,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "chunkIndex must be a non-negative integer" }, { status: 400 });
     }
     if (!(file instanceof File) || file.size === 0) {
+      console.warn(`[homework-capture/chunk] reject empty file chunkIndex=${chunkIndex}`);
       return NextResponse.json({ error: "file is required" }, { status: 400 });
     }
     if (file.size > MAX_CHUNK_BYTES) {
@@ -95,6 +106,30 @@ export async function POST(request: NextRequest) {
 
     const buf = Buffer.from(await file.arrayBuffer());
     const mime = file.type || "video/webm";
+
+    const diagRaw = parseOptionalInt(formData.get("diagRawSliceBytes"));
+    const diagInit = parseOptionalInt(formData.get("diagInitSegmentBytes"));
+    const diagCluster = parseOptionalInt(formData.get("diagClusterOffset"));
+    const headHex = buf.length >= 8 ? buf.subarray(0, 8).toString("hex") : "";
+
+    console.log(
+      `[homework-capture/chunk] ok chunkIndex=${chunkIndex} bytes=${buf.length} mime=${mime} doc=${docId.slice(0, 12)}…` +
+        (diagRaw != null || diagInit != null || diagCluster != null
+          ? ` diag rawSlice=${diagRaw ?? "—"} initSeg=${diagInit ?? "—"} clusterOff=${diagCluster ?? "—"}`
+          : "") +
+        ` head8=${headHex}`
+    );
+    if (buf.length < WARN_COMBINED_BYTES) {
+      console.warn(
+        `[homework-capture/chunk] WARN very small combined WebM (${buf.length} bytes) — often broken init merge or empty media; chunkIndex=${chunkIndex}`
+      );
+    }
+    if (chunkIndex > 0 && diagInit != null && diagInit < 64) {
+      console.warn(
+        `[homework-capture/chunk] WARN tiny init segment (${diagInit} bytes) — prepended chunks may be undecodable; chunkIndex=${chunkIndex}`
+      );
+    }
+
     const name = `capture_${docId.slice(0, 12)}_part${String(chunkIndex).padStart(4, "0")}.webm`;
     const prefix = `homework/capture/${docId}`;
     const fileUrl = await uploadBinaryToBytescale(buf, `${prefix}_${name}`, mime);
